@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenClaw Scribe</title>
+<link rel="stylesheet" href="style.css">
+<body inert>
+<header><strong>Scribe</strong><span id="status" role="status">Загрузка…</span></header>
+<p id="tab" class="muted">Запишется активная вкладка в момент старта</p>
+<div class="levels"><label>Вкладка<progress id="tab-level" max="1" value="0"></progress></label><label>Микрофон<progress id="mic-level" max="1" value="0"></progress></label></div>
+<label>Микрофон<select id="microphone"><option value="default">Системный по умолчанию</option><option value="none">Без микрофона</option></select></label>
+<button id="permission" class="quiet">Разрешить доступ к микрофону</button>
+<div class="actions"><button id="start">Начать запись</button><button id="stop" disabled>Остановить</button><output id="elapsed">00:00</output></div>
+<p id="error" class="error" role="alert" hidden></p>
+<label class="inline"><input id="show-text" type="checkbox" checked>Показывать текст</label>
+<section id="transcript" aria-label="Текущая стенограмма"><p class="muted">Текст появится после первого фрагмента речи.</p></section>
+<details id="connection"><summary>Подключение</summary>
+<label>Адрес плагина<input id="url" type="url" spellcheck="false"></label>
+<label>Токен подключения<input id="token" type="password" autocomplete="off" spellcheck="false"></label>
+<label>Язык речи<input id="language" maxlength="3" pattern="[a-z]{2,3}"></label>
+<p class="muted">Данные из команды <code>openclaw scribe pair</code>. Итоги — в разделе «Встречи» OpenClaw.</p>
+</details>
+<script type="module" src="popup.js"></script>
+</body>
+</html>

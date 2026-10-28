@@ -1,0 +1,18 @@
+{
+  "id": "openclaw-scribe",
+  "name": "OpenClaw Scribe",
+  "description": "Local browser recorder and native meeting transcript source",
+  "categories": ["productivity"],
+  "activation": { "onStartup": true },
+  "contracts": { "transcriptSourceProviders": ["openclaw-scribe"] },
+  "transcriptSources": { "openclaw-scribe": { "name": "OpenClaw Scribe", "autoStart": {} } },
+  "cliCommands": [{ "name": "scribe", "description": "Set up the browser recorder", "hasSubcommands": true }],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "port": { "type": "integer", "minimum": 1024, "maximum": 65535, "default": 19789 },
+      "extensionIds": { "type": "array", "items": { "type": "string", "pattern": "^[a-p]{32}$" }, "uniqueItems": true }
+    }
+  }
+}

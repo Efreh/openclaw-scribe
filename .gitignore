@@ -8,6 +8,9 @@ coverage/
 src/spec/results/
 *.tsbuildinfo
 *.log
+/artifacts/
+/src/test-results/
+/src/playwright-report/
 
 # Local environment files; keep documented examples trackable
 .env

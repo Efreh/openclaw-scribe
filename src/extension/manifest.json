@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "OpenClaw Scribe",
+  "description": "Selected tab + microphone → local Whisper → OpenClaw meeting transcripts",
+  "minimum_chrome_version": "116",
+  "permissions": ["activeTab", "tabCapture", "offscreen", "storage"],
+  "background": { "service_worker": "background.js", "type": "module" },
+  "action": { "default_popup": "popup.html", "default_title": "OpenClaw Scribe" },
+  "content_security_policy": { "extension_pages": "default-src 'self'; script-src 'self'; object-src 'none'; connect-src ws://127.0.0.1:* ws://localhost:*" }
+}

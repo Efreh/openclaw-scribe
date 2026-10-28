@@ -1,0 +1,26 @@
+{
+  "name": "openclaw-scribe-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24.22.1 <25 || >=26.12.1" },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "node --test spec/unit/*.test.ts spec/integration/*.test.ts",
+    "build": "node build.mjs",
+    "package": "node build.mjs --pack",
+    "test:browser": "playwright test",
+    "test:native": "node spec/support/native-smoke.mjs"
+  },
+  "dependencies": { "ws": "8.22.0" },
+  "devDependencies": {
+    "@playwright/test": "1.64.1",
+    "@types/chrome": "0.3.7",
+    "@types/node": "24.19.2",
+    "@types/ws": "8.18.2",
+    "esbuild": "0.28.2",
+    "fflate": "0.8.3",
+    "openclaw": "2026.10.7",
+    "typescript": "7.0.2"
+  }
+}

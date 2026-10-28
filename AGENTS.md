@@ -1,5 +1,6 @@
 # Repository conventions
 
+- Work on this project without subagents.
 - This repository contains a TypeScript browser extension and a native OpenClaw
   plugin, with shared protocol/types. Do not introduce an additional backend.
 - Keep project code and its future package/build configuration under `src/`.
@@ -10,5 +11,5 @@
   documentation, licensing, and contributor instructions at the root.
 - Prefer maintained, current stable tooling compatible with the target browsers
   and OpenClaw. Add tooling only when implementing the corresponding capability.
-- The current scaffold is not runnable. Do not describe unimplemented build,
-  recording, transcription, tests, or CI as working features.
+- Document limitations honestly. Verify packages, not only source checkouts;
+  never change the user's live Gateway config as part of automated tests.
