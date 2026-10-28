@@ -18,3 +18,5 @@
   ASR; add only the necessary diarization model/runtime, not another ASR stack.
 - Use the official NeMo-Speech.cpp CLI and Nemotron 3 Diarization model. Do not
   invent per-chunk voice matching or install exploratory engines as dependencies.
+- Keep personal data, conversations, credentials, recordings, host-specific
+  details, and local verification output out of Git and release archives.

@@ -22,3 +22,19 @@ src/spec/results/
 .idea/
 *.iml
 .DS_Store
+
+# Private capture state and model files
+.openclaw/
+transcripts/
+recordings/
+scribe/
+pairing-token
+*.sqlite
+*.sqlite3
+*.db
+*.wav
+*.mp3
+*.pcm
+*.gguf
+*.ggml
+*.jsonl
