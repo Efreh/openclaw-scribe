@@ -23,7 +23,7 @@ Scribe не скачивает модели и не подключает обл�
 аудиосовместимые записи `type: cli` из настроек хоста.
 
 ```sh
-openclaw plugins install npm-pack:/абсолютный/путь/efreh-openclaw-scribe-0.1.0.tgz --accept-capabilities
+openclaw plugins install npm-pack:/абсолютный/путь/efreh-openclaw-scribe-0.1.1.tgz --force --accept-capabilities
 openclaw scribe setup
 openclaw gateway restart
 openclaw scribe pair
@@ -35,9 +35,17 @@ openclaw scribe pair
 В данном провайдере «занятость» означает нажатие **Начать запись**, а не
 появление людей в звонке: при старте Gateway звук не захватывается.
 
-`pair` печатает адрес и отдельный токен для расширения. Токен хранится локально
+`pair` печатает адрес и полный отдельный токен для расширения, готовый к копированию.
+Этот явный локальный вывод не проходит через журналирование и маскировку `console.log`;
+общая защита секретов OpenClaw не меняется. Токен хранится локально
 в `<stateDir>/scribe/pairing-token` с правами `0600`; токен Gateway расширению
 не нужен. По умолчанию соединение идёт на `ws://127.0.0.1:19789`.
+
+Для обновления уже установленного плагина повторите `plugins install` с новым TGZ
+и `--force`, затем `openclaw gateway restart`. Повторный `scribe setup` не нужен;
+настройки и токен подключения сохраняются. Расширение версии 0.1.0 совместимо.
+В версии 0.1.0 команда `pair` маскировала токен; до обновления полный токен можно
+прочитать из `<stateDir>/scribe/pairing-token` (обычно `~/.openclaw/scribe/pairing-token`).
 
 При необходимости в `plugins.entries.openclaw-scribe.config` задайте `port`
 и/или `extensionIds` (список разрешённых ID расширения). Слушатель всегда
@@ -112,6 +120,7 @@ npm ci --ignore-scripts
 npm run check
 npm test
 npm run package
+npm run test:pair
 npx playwright install chromium
 npm run test:browser
 ```
@@ -134,7 +143,11 @@ npm run test:native -- --audio /путь/к/тестовой-записи.wav
 эвристические заметки. Локальный профиль с `proof.json` остаётся для проверки.
 `OPENCLAW_BIN` позволяет указать путь к CLI.
 
-На push/PR CI проверяет типы, протокол, сервер и настоящее браузерное
+`test:pair` устанавливает собранный TGZ в отдельный временный профиль и проверяет
+полный токен в выводе настоящего CLI, повторное использование токена, настроенный
+порт и отсутствие токена в журнале. Рабочий Gateway не запускается и не меняется.
+
+На push/PR CI проверяет типы, протокол, сервер, команду подключения и настоящее браузерное
 аудио с тестовыми устройствами, затем выдаёт два архива и суммы.
 Тег `v<версия из src/package.json>` дополнительно публикует GitHub Release.
 Npm/ClawHub и магазины браузеров для подключения не требуются.

@@ -27,6 +27,7 @@ jobs:
       - run: npm run check
       - run: npm test
       - run: npm run package
+      - run: npm run test:pair
       - run: npx playwright install --with-deps chromium
       - run: npm run test:browser
       - uses: actions/upload-artifact@v7.0.2

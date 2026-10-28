@@ -75,7 +75,9 @@ export default definePluginEntry({
     api.registerCli(({ program }) => {
       const command = program.command("scribe").description("Set up the browser recorder");
       command.command("pair").description("Print the local extension connection settings").action(async () => {
-        console.log(JSON.stringify({ url: `ws://127.0.0.1:${port}`, token: await pairingToken(api.runtime.state.resolveStateDir()) }, null, 2));
+        // Explicit local credential export: console.log is captured and redacted by OpenClaw.
+        // Write only this command's result directly; keep credentials out of host log files.
+        process.stdout.write(`${JSON.stringify({ url: `ws://127.0.0.1:${port}`, token: await pairingToken(api.runtime.state.resolveStateDir()) }, null, 2)}\n`);
       });
       command.command("setup").description("Enable the native transcript source; preserve other sources").action(async () => {
         await api.runtime.config.mutateConfigFile({

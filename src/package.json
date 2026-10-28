@@ -1,6 +1,6 @@
 {
   "name": "openclaw-scribe-workspace",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "engines": { "node": ">=24.22.1 <25 || >=26.12.1" },
@@ -10,6 +10,7 @@
     "build": "node build.mjs",
     "package": "node build.mjs --pack",
     "test:browser": "playwright test",
+    "test:pair": "node --test spec/integration/pairing.spec.ts",
     "test:native": "node spec/support/native-smoke.mjs"
   },
   "dependencies": { "ws": "8.22.0" },
