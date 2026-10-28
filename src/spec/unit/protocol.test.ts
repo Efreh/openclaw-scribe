@@ -23,6 +23,7 @@ test("untrusted wire data is rejected before allocation or transcription", () =>
   bytes[1] = 8; assert.throws(() => decodeAudio(bytes));
   assert.throws(() => parseHello({ type: "start", version: 2 }));
   assert.throws(() => parseHello({ type: "start", version: 1, token: "x", title: "a", url: "", language: "ru;sh" }));
+  assert.throws(() => parseHello({ type: "start", version: 1, token: "x", title: "a", url: "", language: "ru", diarization: "yes" }));
 });
 
 test("connection settings stay loopback-only and never put credentials in URLs", () => {

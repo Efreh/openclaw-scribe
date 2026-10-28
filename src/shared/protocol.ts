@@ -5,12 +5,15 @@ export const MAX_AUDIO_BYTES = SAMPLE_RATE * 20 * 2 + 10;
 export const DEFAULT_URL = "ws://127.0.0.1:19789";
 export type Channel = "tab" | "mic";
 export type AudioChunk = { channel: Channel; sequence: number; offsetMs: number; samples: Int16Array };
-export type Hello = { type: "start"; version: 1; token: string; title: string; url: string; language: string };
+export type Hello = { type: "start"; version: 1; token: string; title: string; url: string; language: string; diarization?: boolean };
 export type Line = { speaker: string; text: string; offsetMs: number };
 export type ServerMessage =
-  | { type: "ready"; sessionId: string }
+  | { type: "ready"; sessionId: string; diarization?: boolean }
   | { type: "ack"; channel: Channel; sequence: number }
   | { type: "line"; line: Line }
+  | { type: "transcript"; lines: Line[] }
+  | { type: "progress"; stage: "diarization" | "transcription"; done: number; total: number }
+  | { type: "warning"; message: string }
   | { type: "stopped"; sessionId: string }
   | { type: "error"; message: string };
 
@@ -19,7 +22,8 @@ export function parseHello(raw: unknown): Hello {
   if (!v || v.type !== "start" || v.version !== VERSION || typeof v.token !== "string"
     || v.token.length > 256 || typeof v.title !== "string" || v.title.length > 300
     || typeof v.url !== "string" || v.url.length > 4096
-    || typeof v.language !== "string" || !/^[a-z]{2,3}$/.test(v.language)) {
+    || typeof v.language !== "string" || !/^[a-z]{2,3}$/.test(v.language)
+    || (v.diarization !== undefined && typeof v.diarization !== "boolean")) {
     throw new Error("Invalid start message");
   }
   return v as Hello;
@@ -59,15 +63,22 @@ export function decodeAudio(bytes: Uint8Array): AudioChunk {
   };
 }
 
-export function wav(samples: Int16Array): Uint8Array {
-  const bytes = new Uint8Array(44 + samples.length * 2);
+export function wavHeader(samples: number): Uint8Array {
+  const bytes = new Uint8Array(44);
   const view = new DataView(bytes.buffer);
   const text = (offset: number, value: string) => [...value].forEach((c, i) => view.setUint8(offset + i, c.charCodeAt(0)));
-  text(0, "RIFF"); view.setUint32(4, bytes.length - 8, true); text(8, "WAVEfmt ");
+  text(0, "RIFF"); view.setUint32(4, 36 + samples * 2, true); text(8, "WAVEfmt ");
   view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
   view.setUint32(24, SAMPLE_RATE, true); view.setUint32(28, SAMPLE_RATE * 2, true);
   view.setUint16(32, 2, true); view.setUint16(34, 16, true); text(36, "data");
-  view.setUint32(40, samples.length * 2, true);
+  view.setUint32(40, samples * 2, true);
+  return bytes;
+}
+
+export function wav(samples: Int16Array): Uint8Array {
+  const bytes = new Uint8Array(44 + samples.length * 2);
+  bytes.set(wavHeader(samples.length));
+  const view = new DataView(bytes.buffer);
   samples.forEach((sample, i) => view.setInt16(44 + i * 2, sample, true));
   return bytes;
 }

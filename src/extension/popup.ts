@@ -8,6 +8,8 @@ let config: Settings = await settings();
 let current: State;
 for (const key of ["url", "token", "language"] as const) input(key).value = config[key];
 input("show-text").checked = config.showText;
+input("diarization").checked = config.diarization;
+el("diarization-hint").hidden = !config.diarization;
 el<HTMLDetailsElement>("connection").open = !config.token;
 const microphone = el<HTMLSelectElement>("microphone");
 try {
@@ -23,6 +25,7 @@ async function save() {
   config = {
     url: validateEndpoint(input("url").value.trim()), token: input("token").value.trim(),
     language: input("language").value.trim(), microphone: microphone.value, showText: input("show-text").checked,
+    diarization: input("diarization").checked,
   };
   if (!/^[a-z]{2,3}$/.test(config.language)) throw new Error("Код языка: ru, en и т. п.");
   await chrome.storage.local.set({ settings: config });
@@ -31,7 +34,7 @@ function error(value: string) { el("error").textContent = value; el("error").hid
 function render(state: State) {
   current = state;
   const labels = { idle: "Готово к записи", starting: "Подключение…", recording: "Идёт запись", stopping: "Распознавание и сохранение…", error: "Запись остановлена" };
-  el("status").textContent = labels[state.status];
+  el("status").textContent = state.status === "stopping" && state.progress ? state.progress : labels[state.status];
   el("tab").textContent = state.tab ? `Вкладка: ${state.tab.title}` : "Запишется активная вкладка в момент старта";
   el("tab").title = state.tab?.url ?? "";
   el<HTMLProgressElement>("tab-level").value = Math.min(1, state.levels.tab * 5);
@@ -40,6 +43,10 @@ function render(state: State) {
   el<HTMLButtonElement>("start").disabled = active;
   el<HTMLButtonElement>("stop").disabled = state.status !== "recording";
   microphone.disabled = active;
+  input("diarization").disabled = active;
+  el("diarization-hint").hidden = !input("diarization").checked;
+  el("warning").textContent = state.warning ?? (state.diarization && state.status === "recording" ? "Черновик: участники будут разделены после остановки." : "");
+  el("warning").hidden = !el("warning").textContent;
   error(state.error ?? "");
   const text = el("transcript"); text.hidden = !input("show-text").checked;
   if (state.lines.length) {
@@ -57,7 +64,7 @@ function render(state: State) {
 }
 chrome.runtime.onMessage.addListener((request) => { if (request.target === "popup") render(request.state); });
 render(await chrome.runtime.sendMessage({ target: "background", action: "get" }));
-for (const id of ["url", "token", "language", "microphone", "show-text"]) {
+for (const id of ["url", "token", "language", "microphone", "show-text", "diarization"]) {
   el(id).addEventListener("change", () => { void save().then(() => current && render(current), (e) => error(e.message)); });
 }
 el("start").onclick = async () => {

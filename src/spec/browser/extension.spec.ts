@@ -5,6 +5,7 @@ import { resolve, join } from "node:path";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import { createScribe } from "../../plugin/server.ts";
+import { createDiarizationSession } from "../../plugin/diarization.ts";
 
 test("packaged MV3 extension loads, renders safely and retains popup settings", async () => {
   const dir = await mkdtemp(join(tmpdir(), "scribe-browser-"));
@@ -22,6 +23,7 @@ test("packaged MV3 extension loads, renders safely and retains popup settings", 
     await expect(page.locator("#status")).toHaveText("Готово к записи");
     await expect(page.locator("#connection")).toHaveAttribute("open", "");
     await page.locator("#token").fill("test-settings-token");
+    await page.locator("#diarization").check();
     await page.locator("#language").fill("en");
     await page.locator("#language").blur();
     await expect.poll(() => page.evaluate(() => chrome.storage.local.get("settings").then((data) => (data.settings as { language?: string })?.language))).toBe("en");
@@ -41,6 +43,8 @@ test("packaged MV3 extension loads, renders safely and retains popup settings", 
     await expect(reopened.locator("#status")).toHaveText("Идёт запись");
     await expect(reopened.locator("#language")).toHaveValue("en");
     await expect(reopened.locator("#token")).toHaveValue("test-settings-token");
+    await expect(reopened.locator("#diarization")).toBeChecked();
+    await expect(reopened.locator("#diarization")).toBeDisabled();
     await expect(reopened.locator("#start")).toBeDisabled();
     await expect(reopened.locator("#stop")).toBeEnabled();
     await reopened.locator("#show-text").uncheck();
@@ -52,7 +56,10 @@ test("real tab + microphone capture survives popup closure and tab switches, the
   const dir = await mkdtemp(join(tmpdir(), "scribe-capture-"));
   const captured: string[] = [];
   let finalized = false;
-  const scribe = createScribe({ port: 0, token: "browser-integration-token", warn: () => {}, async transcribe(chunk) {
+  const scribe = createScribe({ port: 0, token: "browser-integration-token", warn: () => {},
+    createDiarization: (hello, sessionId) => createDiarizationSession({ workDir: join(dir, "staging"), sessionId, language: hello.language,
+      diarize: async (_path, duration) => [{ start: 0, end: duration / 2, speaker: 1 }, { start: duration / 2, end: duration, speaker: 2 }],
+    }), async transcribe(chunk) {
     captured.push(chunk.channel); return `Captured ${chunk.channel}`;
   } });
   await scribe.provider.watchOccupancy!({ source: { providerId: "openclaw-scribe" }, onEmpty() {}, onOccupied() {
@@ -77,7 +84,7 @@ test("real tab + microphone capture survives popup closure and tab switches, the
     const id = new URL(worker.url()).host;
     await context.grantPermissions(["microphone"]);
     await worker.evaluate(async (port) => {
-      await chrome.storage.local.set({ settings: { url: `ws://127.0.0.1:${port}`, token: "browser-integration-token", microphone: "default", language: "ru", showText: true } });
+      await chrome.storage.local.set({ settings: { url: `ws://127.0.0.1:${port}`, token: "browser-integration-token", microphone: "default", language: "ru", showText: true, diarization: true } });
     }, port);
     const control = await context.newPage(); await control.goto(`chrome-extension://${id}/popup.html`);
     await expect(control.locator("body")).toHaveJSProperty("inert", false);
@@ -102,6 +109,8 @@ test("real tab + microphone capture survives popup closure and tab switches, the
     await reopened.screenshot({ path: "test-results/recording.png" });
     await reopened.locator("#stop").click();
     await expect(reopened.locator("#status")).toHaveText("Готово к записи");
+    await expect(reopened.locator("#transcript")).toContainText("Участник 1");
+    await expect(reopened.locator("#transcript")).toContainText("Участник 2");
     expect(finalized).toBe(true);
   } finally {
     await context.close(); await scribe.stop(); await new Promise<void>((r) => web.close(() => r()));

@@ -10,8 +10,11 @@
 <div class="levels"><label>Вкладка<progress id="tab-level" max="1" value="0"></progress></label><label>Микрофон<progress id="mic-level" max="1" value="0"></progress></label></div>
 <label>Микрофон<select id="microphone"><option value="default">Системный по умолчанию</option><option value="none">Без микрофона</option></select></label>
 <button id="permission" class="quiet">Разрешить доступ к микрофону</button>
+<label class="inline"><input id="diarization" type="checkbox">Разделить собеседников после записи</label>
+<p id="diarization-hint" class="muted" hidden>До 8 голосов во вкладке. Во время записи — черновик; после остановки — текст по участникам.</p>
 <div class="actions"><button id="start">Начать запись</button><button id="stop" disabled>Остановить</button><output id="elapsed">00:00</output></div>
 <p id="error" class="error" role="alert" hidden></p>
+<p id="warning" class="muted" role="status" hidden></p>
 <label class="inline"><input id="show-text" type="checkbox" checked>Показывать текст</label>
 <section id="transcript" aria-label="Текущая стенограмма"><p class="muted">Текст появится после первого фрагмента речи.</p></section>
 <details id="connection"><summary>Подключение</summary>

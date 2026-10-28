@@ -28,6 +28,12 @@ jobs:
       - run: npm test
       - run: npm run package
       - run: npm run test:pair
+      - name: Verify native diarization on annotated public audio
+        run: |
+          curl -fsSL --proto '=https' https://github.com/NVIDIA/NeMo-Speech.cpp/releases/download/v0.2.0/nemo-speech-0.2.0-linux-x86_64-cpu.tar.gz -o /tmp/nemo-speech.tar.gz
+          echo 'f396057150f1b774935c7414fd32ebc04195a795a34120d78d8c9ecefa1b7507  /tmp/nemo-speech.tar.gz' | sha256sum -c -
+          tar -xzf /tmp/nemo-speech.tar.gz -C /tmp
+          NEMO_SPEECH_BIN=/tmp/nemo-speech-0.2.0-linux-x86_64-cpu/bin/nemo-speech npm run test:diarization
       - run: npx playwright install --with-deps chromium
       - run: npm run test:browser
       - uses: actions/upload-artifact@v7.0.2

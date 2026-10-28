@@ -12,7 +12,15 @@
     "additionalProperties": false,
     "properties": {
       "port": { "type": "integer", "minimum": 1024, "maximum": 65535, "default": 19789 },
-      "extensionIds": { "type": "array", "items": { "type": "string", "pattern": "^[a-p]{32}$" }, "uniqueItems": true }
+      "extensionIds": { "type": "array", "items": { "type": "string", "pattern": "^[a-p]{32}$" }, "uniqueItems": true },
+      "diarization": {
+        "type": "object", "additionalProperties": false, "required": ["command", "model"],
+        "properties": {
+          "command": { "type": "string", "minLength": 1 },
+          "model": { "type": "string", "minLength": 1 },
+          "device": { "type": "string", "pattern": "^(auto|cpu|cuda(:[0-9]+)?|metal|vulkan(:[0-9]+)?)$", "default": "auto" }
+        }
+      }
     }
   }
 }

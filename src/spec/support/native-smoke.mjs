@@ -13,6 +13,9 @@ import { WebSocket } from "ws";
 
 const run = promisify(execFile);
 const audio = process.argv[process.argv.indexOf("--audio") + 1];
+const diarization = process.argv.includes("--diarization");
+const language = process.argv.includes("--language") ? process.argv[process.argv.indexOf("--language") + 1] : "ru";
+const duration = process.argv.includes("--duration") ? process.argv[process.argv.indexOf("--duration") + 1] : "12";
 if (!process.argv.includes("--audio") || !audio) throw new Error("Usage: npm run test:native -- --audio /path/to/public-test-audio.wav");
 const cli = process.env.OPENCLAW_BIN || "openclaw";
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -40,7 +43,7 @@ await command(["plugins", "install", `npm-pack:${join(repo, `artifacts/efreh-ope
 const config = JSON.parse(await readFile(cfgPath, "utf8"));
 config.plugins.entries["openclaw-scribe"].config = { port: scribePort };
 await writeFile(cfgPath, JSON.stringify(config));
-await command(["scribe", "setup"]);
+await command(["scribe", "setup", ...(diarization ? ["--diarization"] : [])]);
 const inspection = JSON.parse(await command(["plugins", "inspect", "openclaw-scribe", "--runtime", "--json"]));
 assert.equal(inspection.plugin.status, "loaded"); assert.deepEqual(inspection.diagnostics, []);
 let log = "";
@@ -72,9 +75,9 @@ try {
     throw new Error(`Timed out waiting for ${type}`);
   }
   await once(ws, "open");
-  ws.send(JSON.stringify({ type: "start", version: 1, token, title: "Scribe native package smoke test", url: "https://example.test/public-audio", language: "ru" }));
+  ws.send(JSON.stringify({ type: "start", version: 1, token, title: "Scribe native package smoke test", url: "https://example.test/public-audio", language, diarization }));
   const { sessionId } = await wait("ready");
-  const { stdout: pcm } = await run("ffmpeg", ["-v", "error", "-i", resolve(audio), "-t", "12", "-ar", "16000", "-ac", "1", "-f", "s16le", "pipe:1"], { encoding: "buffer", maxBuffer: 1024 * 1024 });
+  const { stdout: pcm } = await run("ffmpeg", ["-v", "error", "-i", resolve(audio), "-t", duration, "-ar", "16000", "-ac", "1", "-f", "s16le", "pipe:1"], { encoding: "buffer", maxBuffer: 4 * 1024 * 1024 });
   for (let offset = 0, sequence = 0; offset < pcm.length; offset += 320_000, sequence++) {
     const audio = pcm.subarray(offset, offset + 320_000);
     const frame = Buffer.alloc(10 + audio.length); frame[0] = 1; frame[1] = 0;
@@ -88,7 +91,13 @@ try {
   const transcript = JSON.parse(await command(["transcripts", "path", session.selector, "--transcript", "--json"]));
   const contents = await readFile(transcript.path, "utf8");
   assert.ok(contents.length > 50); assert.ok(events.some((v) => v.type === "line"));
-  const proof = { ok: true, packageVersion: version, hostVersion: "2026.10.7", sessionId, chunks: events.filter((v) => v.type === "ack").length, lines: events.filter((v) => v.type === "line").length, hasNativeSummary: session.hasSummary, isolatedProfile: root };
+  const finalLines = events.find((v) => v.type === "transcript")?.lines ?? [];
+  const speakers = [...new Set(finalLines.map((line) => line.speaker))];
+  if (diarization) {
+    assert.ok(contents.includes("Участник 1")); assert.ok(contents.includes("Участник 2"));
+    assert.ok(!events.some((v) => v.type === "warning"), "native diarization must not fall back to the draft");
+  }
+  const proof = { ok: true, packageVersion: version, hostVersion: "2026.10.7", sessionId, chunks: events.filter((v) => v.type === "ack").length, lines: events.filter((v) => v.type === "line").length, diarization, speakers, finalLines: finalLines.length, hasNativeSummary: session.hasSummary, isolatedProfile: root };
   await writeFile(join(root, "proof.json"), JSON.stringify(proof, null, 2)); console.log(JSON.stringify(proof, null, 2));
 } catch (error) {
   await writeFile(join(root, "gateway.log"), log); console.error(`Native proof diagnostics: ${root}/gateway.log`); throw error;

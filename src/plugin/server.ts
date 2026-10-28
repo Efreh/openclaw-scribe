@@ -5,6 +5,7 @@ import type { VerifyClientCallbackSync } from "ws";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 import { decodeAudio, MAX_AUDIO_BYTES, parseHello, SAMPLE_RATE } from "../shared/protocol.ts";
 import type { AudioChunk, Hello, ServerMessage } from "../shared/protocol.ts";
+import type { CapturedLine, DiarizationSession } from "./diarization.ts";
 
 type Provider = Parameters<OpenClawPluginApi["registerTranscriptSourceProvider"]>[0];
 type Capture = Parameters<NonNullable<Provider["start"]>>[0];
@@ -12,11 +13,13 @@ type Watch = Parameters<NonNullable<Provider["watchOccupancy"]>>[0];
 type Recording = {
   socket: WebSocket; hello: Hello; capture?: Capture; work: Promise<void>;
   pending: number; sequence: { tab: number; mic: number }; closing: boolean;
-  ready: (sessionId: string) => void; end?: Promise<void>;
+  ready: (sessionId: string) => void; rejectReady: (error: Error) => void; end?: Promise<void>;
+  diarization?: DiarizationSession;
 };
 export type ScribeOptions = {
   token: string; port: number; extensionIds?: string[];
   transcribe: (chunk: AudioChunk, language: string) => Promise<string>;
+  createDiarization?: (hello: Hello, sessionId: string) => Promise<DiarizationSession>;
   warn: (message: string) => void;
 };
 const send = (socket: WebSocket, value: ServerMessage) => {
@@ -29,20 +32,56 @@ export function createScribe(options: ScribeOptions) {
   let recording: Recording | undefined;
   let server: WebSocketServer | undefined;
 
+  async function commit(current: Recording, line: CapturedLine, id: string) {
+    const started = Date.parse(current.capture!.session.startedAt);
+    await current.capture!.onUtterance({
+      id: `${current.capture!.session.sessionId}:${id}`, sessionId: current.capture!.session.sessionId,
+      startedAt: new Date(started + line.offsetMs).toISOString(),
+      endedAt: new Date(started + line.offsetMs + line.durationMs).toISOString(),
+      speaker: { id: line.speakerId, label: line.speaker }, text: line.text, final: true,
+    });
+  }
+
   async function finish(current: Recording, notify = true) {
     if (current.end) return current.end;
     current.closing = true;
-    watcher?.onEmpty();
     current.end = (async () => {
       await current.work;
       const capture = current.capture;
+      let cleanup: (() => Promise<void>) | undefined;
+      if (capture && current.diarization) {
+        const staged = current.diarization;
+        let keepAudio = false;
+        let lines: CapturedLine[];
+        try {
+          send(current.socket, { type: "progress", stage: "diarization", done: 0, total: 0 });
+          lines = await staged.finalize(options.transcribe, (done, total) => send(current.socket, { type: "progress", stage: "transcription", done, total }));
+        } catch (error) {
+          keepAudio = true;
+          lines = [...staged.drafts].sort((a, b) => a.offsetMs - b.offsetMs);
+          const warning = `Разделение собеседников не завершено. Сохранён черновик без разделения; временная запись для повтора: ${staged.path}`;
+          options.warn(`${warning}. ${message(error)}`);
+          send(current.socket, { type: "warning", message: warning });
+        }
+        // Persist only the selected final result: native transcripts are append-only.
+        for (const [index, line] of lines.entries()) await commit(current, line, `final:${index}`);
+        send(current.socket, { type: "transcript", lines: lines.slice(-100) });
+        if (!keepAudio) cleanup = () => staged.dispose();
+      }
       if (capture && notify) {
         await capture.onStatus?.({ sessionId: capture.session.sessionId, active: false, source: capture.session.source });
       }
+      await cleanup?.();
       if (capture) send(current.socket, { type: "stopped", sessionId: capture.session.sessionId });
+    })().catch((error) => {
+      send(current.socket, { type: "error", message: `Не удалось сохранить стенограмму: ${message(error)}${current.diarization ? `. Временная запись: ${current.diarization.path}` : ""}` });
+      throw error;
+    }).finally(() => {
       if (recording === current) recording = undefined;
+      // Native capture must stay occupied until final utterances have been delivered.
+      watcher?.onEmpty();
       current.socket.close(1000, "Recording ended");
-    })();
+    });
     return current.end;
   }
 
@@ -57,6 +96,18 @@ export function createScribe(options: ScribeOptions) {
       const current = recording;
       if (!current || current.closing || current.capture) return { ok: false, error: "No browser recording waiting to start" };
       current.capture = request;
+      try {
+        if (current.hello.diarization) {
+          current.work = options.createDiarization!(current.hello, request.session.sessionId).then((session) => { current.diarization = session; });
+          await current.work;
+        }
+        if (current.closing) return { ok: false, error: "Browser recording closed during startup" };
+      } catch (error) {
+        current.work = Promise.resolve();
+        const failure = error instanceof Error ? error : new Error(message(error));
+        current.rejectReady(failure); fail(current, failure);
+        return { ok: false, error: failure.message };
+      }
       current.ready(request.session.sessionId);
       return { ok: true, session: { ...request.session, title: current.hello.title || "Browser recording" } };
     },
@@ -66,7 +117,7 @@ export function createScribe(options: ScribeOptions) {
       return { ok: true, sessionId: request.sessionId, stoppedAt: new Date().toISOString() };
     },
     async status(source) {
-      return [{ active: Boolean(recording && !recording.closing), source, sessionId: recording?.capture?.session.sessionId }];
+      return [{ active: Boolean(recording), source, sessionId: recording?.capture?.session.sessionId }];
     },
   };
 
@@ -84,18 +135,23 @@ export function createScribe(options: ScribeOptions) {
     if (expected.length !== supplied.length || !timingSafeEqual(expected, supplied)) throw new Error("Invalid pairing token");
     if (recording) throw new Error("Another recording is already active");
     if (!watcher) throw new Error("Run openclaw scribe setup, then restart the Gateway");
+    if (hello.diarization && !options.createDiarization) throw new Error("Для разделения собеседников выполните openclaw scribe setup --diarization и перезапустите Gateway");
     let resolveReady!: (sessionId: string) => void;
-    const attached = new Promise<string>((resolve) => { resolveReady = resolve; });
+    let rejectReady!: (error: Error) => void;
+    const attached = new Promise<string>((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
     const current: Recording = {
       socket, hello, work: Promise.resolve(), pending: 0, sequence: { tab: 0, mic: 0 }, closing: false,
-      ready: resolveReady,
+      ready: resolveReady, rejectReady,
     };
     recording = current;
     watcher.onOccupied();
-    const timeout = setTimeout(() => fail(current, new Error("OpenClaw did not start transcript capture within 15 seconds")), 15_000);
+    const timeout = setTimeout(() => {
+      const error = new Error("OpenClaw did not start transcript capture within 15 seconds");
+      rejectReady(error); fail(current, error);
+    }, 15_000);
     try {
       const sessionId = await attached;
-      if (!current.closing && socket.readyState === WebSocket.OPEN) send(socket, { type: "ready", sessionId });
+      if (!current.closing && socket.readyState === WebSocket.OPEN) send(socket, { type: "ready", sessionId, diarization: Boolean(current.diarization) });
     } finally { clearTimeout(timeout); }
   }
 
@@ -105,21 +161,17 @@ export function createScribe(options: ScribeOptions) {
     if (chunk.sequence !== current.sequence[chunk.channel]++) throw new Error("Audio sequence mismatch");
     if (++current.pending > 12) throw new Error("Transcription cannot keep up; recording stopped to avoid losing audio");
     current.work = current.work.then(async () => {
+      await current.diarization?.append(chunk);
       // Skip only near-digital silence. Do not send silence to Whisper, which can hallucinate text.
       const rms = Math.sqrt(chunk.samples.reduce((sum, v) => sum + v * v, 0) / chunk.samples.length) / 32768;
       const text = rms < 0.001 || chunk.samples.length < SAMPLE_RATE / 5
         ? "" : (await options.transcribe(chunk, current.hello.language)).trim();
       if (text) {
-        const speaker = chunk.channel === "mic" ? "Микрофон" : "Вкладка";
-        const started = Date.parse(current.capture!.session.startedAt);
-        await current.capture!.onUtterance({
-          id: `${current.capture!.session.sessionId}:${chunk.channel}:${chunk.sequence}`,
-          sessionId: current.capture!.session.sessionId,
-          startedAt: new Date(started + chunk.offsetMs).toISOString(),
-          endedAt: new Date(started + chunk.offsetMs + chunk.samples.length / SAMPLE_RATE * 1000).toISOString(),
-          speaker: { id: chunk.channel, label: speaker }, text, final: true,
-        });
-        send(current.socket, { type: "line", line: { speaker, text, offsetMs: chunk.offsetMs } });
+        const line = { speaker: chunk.channel === "mic" ? "Микрофон" : "Вкладка", speakerId: chunk.channel,
+          text, offsetMs: chunk.offsetMs, durationMs: chunk.samples.length / SAMPLE_RATE * 1000 };
+        if (current.diarization) await current.diarization.draft(line);
+        else await commit(current, line, `${chunk.channel}:${chunk.sequence}`);
+        send(current.socket, { type: "line", line });
       }
       send(current.socket, { type: "ack", channel: chunk.channel, sequence: chunk.sequence });
     }).catch((error) => fail(current, error)).finally(() => { current.pending--; });

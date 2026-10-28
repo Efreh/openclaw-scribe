@@ -58,7 +58,7 @@ async function start(request: { streamId: string; tab: Tab; settings: Settings }
   const config = request.settings;
   const endpoint = validateEndpoint(config.url);
   if (!config.token.trim()) throw new Error("Укажите токен из openclaw scribe pair");
-  state = { ...idle(), status: "starting", tab: request.tab }; stopping = false;
+  state = { ...idle(), status: "starting", tab: request.tab, diarization: config.diarization }; stopping = false;
   unacked = new Set(); publish();
   // Consume Chrome's one-use stream ID immediately, before waiting for network/native startup.
   const constraints = { mandatory: { chromeMediaSource: "tab", chromeMediaSourceId: request.streamId } } as unknown as MediaTrackConstraints;
@@ -77,7 +77,7 @@ async function start(request: { streamId: string; tab: Tab; settings: Settings }
     const done = (error?: Error) => { clearTimeout(timer); error ? reject(error) : resolve(); };
     connection.onopen = () => connection.send(JSON.stringify({
       type: "start", version: VERSION, token: config.token.trim(), title: request.tab.title,
-      url: request.tab.url, language: config.language,
+      url: request.tab.url, language: config.language, diarization: config.diarization,
     }));
     connection.onerror = () => done(new Error("Нет соединения с плагином OpenClaw"));
     connection.onclose = () => {
@@ -88,9 +88,18 @@ async function start(request: { streamId: string; tab: Tab; settings: Settings }
     connection.onmessage = ({ data }) => {
       if (socket !== connection) return;
       const event = JSON.parse(String(data)) as ServerMessage;
-      if (event.type === "ready") { state.sessionId = event.sessionId; done(); }
+      if (event.type === "ready") {
+        if (config.diarization && event.diarization !== true) { done(new Error("Обновите плагин OpenClaw Scribe для разделения собеседников")); return; }
+        state.sessionId = event.sessionId; done();
+      }
       if (event.type === "ack") unacked.delete(`${event.channel}:${event.sequence}`);
       if (event.type === "line") { state.lines = [...state.lines, event.line].slice(-100); publish(); }
+      if (event.type === "transcript") { state.lines = event.lines.slice(-100); publish(); }
+      if (event.type === "warning") { state.warning = event.message; publish(); }
+      if (event.type === "progress") {
+        state.progress = event.stage === "diarization" ? "Разделение голосов…" : `Итоговый текст: ${event.done}/${event.total}`;
+        publish();
+      }
       if (event.type === "error") {
         if (state.status === "starting") done(new Error(event.message));
         else void fail(new Error(event.message));
