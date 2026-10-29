@@ -148,7 +148,7 @@ test("failed finalization retains both private WAVs but never substitutes demo t
   } finally { ws.terminate(); await server.stop(); await rm(workDir, { recursive: true, force: true }); }
 });
 
-for (const preview of [false, true]) test(`diarization preview=${preview}: no live archival and both sources get independent final ASR`, { timeout: 10_000 }, async () => {
+for (const preview of [undefined, false, true]) test(`diarization preview=${preview}: no live archival and both sources get independent final ASR`, { timeout: 10_000 }, async () => {
   const workDir = await mkdtemp(join(tmpdir(), "scribe-preview-mode-"));
   const lines: { text: string; speaker?: { id?: string } }[] = [];
   const calls: { channel: string; stopped: boolean }[] = [];

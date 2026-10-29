@@ -135,7 +135,7 @@ export function createScribe(options: ScribeOptions) {
     const current: Recording = {
       socket, hello, work: Promise.resolve(), pending: 0, sequence: { tab: 0, mic: 0 }, closing: false,
       ready: resolveReady, rejectReady,
-      previewEnabled: hello.preview !== false, previewEpoch: 0, previewPending: 0, previewWork: Promise.resolve(),
+      previewEnabled: hello.preview === true, previewEpoch: 0, previewPending: 0, previewWork: Promise.resolve(),
     };
     recording = current;
     watcher.onOccupied();
