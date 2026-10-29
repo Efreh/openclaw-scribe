@@ -41,7 +41,9 @@ await writeFile(cfgPath, JSON.stringify({
 }), { mode: 0o600 });
 await command(["plugins", "install", `npm-pack:${join(repo, `artifacts/efreh-openclaw-scribe-${version}.tgz`)}`, "--force", "--accept-capabilities"]);
 const config = JSON.parse(await readFile(cfgPath, "utf8"));
-config.plugins.entries["openclaw-scribe"].config = { port: scribePort };
+const asrConfig = process.argv.includes("--asr-config")
+  ? JSON.parse(await readFile(process.argv[process.argv.indexOf("--asr-config") + 1], "utf8")) : undefined;
+config.plugins.entries["openclaw-scribe"].config = { port: scribePort, ...(asrConfig ? { asr: asrConfig } : {}) };
 await writeFile(cfgPath, JSON.stringify(config));
 await command(["scribe", "setup", ...(diarization ? ["--diarization"] : [])]);
 const inspection = JSON.parse(await command(["plugins", "inspect", "openclaw-scribe", "--runtime", "--json"]));
@@ -97,7 +99,7 @@ try {
     assert.ok(contents.includes("Участник 1")); assert.ok(contents.includes("Участник 2"));
     assert.ok(!events.some((v) => v.type === "warning"), "native diarization must not fall back to the draft");
   }
-  const proof = { ok: true, packageVersion: version, hostVersion: "2026.10.7", sessionId, chunks: events.filter((v) => v.type === "ack").length, lines: events.filter((v) => v.type === "line").length, diarization, speakers, finalLines: finalLines.length, hasNativeSummary: session.hasSummary, isolatedProfile: root };
+  const proof = { ok: true, asrBackend: asrConfig?.backend ?? "openclaw", packageVersion: version, hostVersion: "2026.10.7", sessionId, chunks: events.filter((v) => v.type === "ack").length, lines: events.filter((v) => v.type === "line").length, diarization, speakers, finalLines: finalLines.length, hasNativeSummary: session.hasSummary, isolatedProfile: root };
   await writeFile(join(root, "proof.json"), JSON.stringify(proof, null, 2)); console.log(JSON.stringify(proof, null, 2));
 } catch (error) {
   await writeFile(join(root, "gateway.log"), log); console.error(`Native proof diagnostics: ${root}/gateway.log`); throw error;

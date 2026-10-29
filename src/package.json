@@ -1,6 +1,6 @@
 {
   "name": "openclaw-scribe-workspace",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "engines": { "node": ">=24.22.1 <25 || >=26.12.1" },

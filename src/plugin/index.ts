@@ -1,9 +1,10 @@
 import { randomBytes } from "node:crypto";
-import { access, link, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, link, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
-import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
-import { wav } from "../shared/protocol.ts";
+import { createAsr } from "./asr.ts";
+import type { AsrConfig } from "./asr.ts";
+export { localAudioConfig } from "./asr.ts";
 import { createScribe } from "./server.ts";
 import { createDiarizationSession, defaultDiarizationCommand, diarizeFile, prepareDiarization } from "./diarization.ts";
 import type { DiarizationConfig } from "./diarization.ts";
@@ -22,21 +23,13 @@ export async function pairingToken(stateDir: string): Promise<string> {
   return token;
 }
 
-export function localAudioConfig(cfg: OpenClawConfig): OpenClawConfig {
-  const media = cfg.tools?.media;
-  const models = (media?.models ?? [])
-    .filter((model) => model.type === "cli" && (!model.capabilities || model.capabilities.includes("audio")));
-  if (!models.length) throw new Error("Configure a local audio CLI (Whisper) in OpenClaw tools.media first");
-  return { ...cfg, tools: { ...cfg.tools, media: {
-    ...media, models, audio: { ...media?.audio, enabled: true },
-  } } };
-}
-
 export default definePluginEntry({
   id: "openclaw-scribe", name: "OpenClaw Scribe", description: "Local browser audio → native OpenClaw meeting transcripts",
   register(api) {
+    const asrConfig = api.pluginConfig?.asr as AsrConfig | undefined;
     const port = Number(api.pluginConfig?.port ?? 19789);
     const diarization = api.pluginConfig?.diarization as DiarizationConfig | undefined;
+    let asr: Awaited<ReturnType<typeof createAsr>> | undefined;
     let service: ReturnType<typeof createScribe> | undefined;
     // Registration is inert: sockets and files are opened only by the service/CLI lifecycle.
     const provider: Parameters<typeof api.registerTranscriptSourceProvider>[0] = {
@@ -50,9 +43,16 @@ export default definePluginEntry({
     api.registerService({
       id: "openclaw-scribe",
       async start(ctx) {
-        const audioConfig = localAudioConfig(ctx.config);
         const workDir = join(ctx.stateDir, "scribe", "work");
         await mkdir(workDir, { recursive: true, mode: 0o700 });
+        asr = await createAsr({
+          config: asrConfig, hostConfig: ctx.config, workDir,
+          async native(filePath, language, cfg) {
+            const result = await api.runtime.mediaUnderstanding.transcribeAudioFile({ filePath, cfg, mime: "audio/wav", language });
+            if (result.text === undefined) throw new Error("Local transcription returned no result");
+            return result.text;
+          },
+        });
         service = createScribe({
           port, token: await pairingToken(ctx.stateDir),
           extensionIds: api.pluginConfig?.extensionIds as string[] | undefined,
@@ -62,23 +62,13 @@ export default definePluginEntry({
             return createDiarizationSession({ workDir, sessionId, language: hello.language,
               diarize: (path, duration) => diarizeFile(diarization, path, duration) });
           } : undefined,
-          async transcribe(chunk, language) {
-            const dir = await mkdtemp(join(workDir, "chunk-"));
-            try {
-              const filePath = join(dir, "audio.wav");
-              await writeFile(filePath, wav(chunk.samples), { mode: 0o600 });
-              const result = await api.runtime.mediaUnderstanding.transcribeAudioFile({
-                filePath, cfg: audioConfig, mime: "audio/wav", language,
-              });
-              if (result.text === undefined) throw new Error("Local transcription returned no result");
-              return result.text;
-            } finally { await rm(dir, { recursive: true, force: true }); }
-          },
+          transcribe: asr.transcribe,
         });
-        await service.start();
+        try { await service.start(); }
+        catch (error) { await asr.stop(); asr = undefined; throw error; }
         ctx.logger.info(`Scribe listening on ws://127.0.0.1:${port}`);
       },
-      async stop() { await service?.stop(); service = undefined; },
+      async stop() { try { await service?.stop(); } finally { service = undefined; await asr?.stop(); asr = undefined; } },
     });
     api.registerCli(({ program }) => {
       const command = program.command("scribe").description("Set up the browser recorder");

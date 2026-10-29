@@ -150,7 +150,7 @@ export async function createDiarizationSession(options: {
       }
       const intervals = speechIntervals(turns).flatMap((turn) => {
         const result = [];
-        // Bound each Whisper request; do not load the entire meeting into the Gateway heap.
+        // Bound each ASR request; do not load the entire meeting into the Gateway heap.
         for (let start = turn.start; start < turn.end; start += 30) result.push({ ...turn, start, end: Math.min(turn.end, start + 30) });
         return result;
       }).filter((turn) => turn.end - turn.start >= 0.2);
