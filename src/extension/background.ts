@@ -1,5 +1,12 @@
 import { idle, settings } from "./state.ts";
-import type { State, Tab } from "./state.ts";
+import type { Settings, State, Tab } from "./state.ts";
+
+// Offscreen documents only support chrome.runtime, not chrome.storage.
+chrome.storage.onChanged.addListener((changes, area) => {
+  const updated = changes.settings?.newValue as Partial<Settings> | undefined;
+  if (area !== "local" || typeof updated?.showText !== "boolean") return;
+  void chrome.runtime.sendMessage({ target: "offscreen", action: "preview", enabled: updated.showText }).catch(() => {});
+});
 
 let busy = false;
 chrome.runtime.onMessage.addListener((request, _sender, respond) => {

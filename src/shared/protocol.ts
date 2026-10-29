@@ -5,10 +5,10 @@ export const MAX_AUDIO_BYTES = SAMPLE_RATE * 20 * 2 + 10;
 export const DEFAULT_URL = "ws://127.0.0.1:19789";
 export type Channel = "tab" | "mic";
 export type AudioChunk = { channel: Channel; sequence: number; offsetMs: number; samples: Int16Array };
-export type Hello = { type: "start"; version: 1; token: string; title: string; url: string; language: string; diarization?: boolean };
+export type Hello = { type: "start"; version: 1; token: string; title: string; url: string; language: string; diarization?: boolean; preview?: boolean };
 export type Line = { speaker: string; text: string; offsetMs: number };
 export type ServerMessage =
-  | { type: "ready"; sessionId: string; diarization?: boolean }
+  | { type: "ready"; sessionId: string; diarization?: boolean; preview?: boolean }
   | { type: "ack"; channel: Channel; sequence: number }
   | { type: "line"; line: Line }
   | { type: "transcript"; lines: Line[] }
@@ -23,10 +23,17 @@ export function parseHello(raw: unknown): Hello {
     || v.token.length > 256 || typeof v.title !== "string" || v.title.length > 300
     || typeof v.url !== "string" || v.url.length > 4096
     || typeof v.language !== "string" || !/^[a-z]{2,3}$/.test(v.language)
-    || (v.diarization !== undefined && typeof v.diarization !== "boolean")) {
+    || (v.diarization !== undefined && typeof v.diarization !== "boolean")
+    || (v.preview !== undefined && typeof v.preview !== "boolean")) {
     throw new Error("Invalid start message");
   }
   return v as Hello;
+}
+
+// Near-digital silence is not useful ASR input; this is not speech detection.
+export function hasAudio(samples: Int16Array): boolean {
+  return samples.length >= SAMPLE_RATE / 5
+    && Math.sqrt(samples.reduce((sum, v) => sum + v * v, 0) / samples.length) / 32768 >= 0.001;
 }
 
 export function validateEndpoint(value: string): string {

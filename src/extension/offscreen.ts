@@ -11,6 +11,14 @@ let nodes: AudioWorkletNode[] = [];
 let unacked = new Set<string>();
 let lastPublish = 0;
 let stopping = false;
+let showText = true;
+
+function setPreview(enabled: boolean) {
+  showText = enabled;
+  if (state.diarization && state.status === "recording" && socket?.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify({ type: "preview", enabled: showText }));
+  }
+}
 
 function publish(force = true) {
   if (!force && Date.now() - lastPublish < 200) return;
@@ -56,6 +64,7 @@ async function attach(stream: MediaStream, channel: Channel) {
 async function start(request: { streamId: string; tab: Tab; settings: Settings }) {
   if (state.status === "recording" || state.status === "starting" || state.status === "stopping") throw new Error("Запись уже запущена");
   const config = request.settings;
+  showText = config.showText;
   const endpoint = validateEndpoint(config.url);
   if (!config.token.trim()) throw new Error("Укажите токен из openclaw scribe pair");
   state = { ...idle(), status: "starting", tab: request.tab, diarization: config.diarization }; stopping = false;
@@ -77,7 +86,7 @@ async function start(request: { streamId: string; tab: Tab; settings: Settings }
     const done = (error?: Error) => { clearTimeout(timer); error ? reject(error) : resolve(); };
     connection.onopen = () => connection.send(JSON.stringify({
       type: "start", version: VERSION, token: config.token.trim(), title: request.tab.title,
-      url: request.tab.url, language: config.language, diarization: config.diarization,
+      url: request.tab.url, language: config.language, diarization: config.diarization, preview: showText,
     }));
     connection.onerror = () => done(new Error("Нет соединения с плагином OpenClaw"));
     connection.onclose = () => {
@@ -90,6 +99,8 @@ async function start(request: { streamId: string; tab: Tab; settings: Settings }
       const event = JSON.parse(String(data)) as ServerMessage;
       if (event.type === "ready") {
         if (config.diarization && event.diarization !== true) { done(new Error("Обновите плагин OpenClaw Scribe для разделения собеседников")); return; }
+        if (config.diarization && typeof event.preview !== "boolean") { done(new Error("Обновите плагин OpenClaw Scribe для независимого демо и обработки после записи")); return; }
+        if (config.diarization) connection.send(JSON.stringify({ type: "preview", enabled: showText }));
         state.sessionId = event.sessionId; done();
       }
       if (event.type === "ack") unacked.delete(`${event.channel}:${event.sequence}`);
@@ -148,6 +159,9 @@ async function stop() {
 
 chrome.runtime.onMessage.addListener((request, _sender, respond) => {
   if (request.target !== "offscreen") return;
+  if (request.action === "preview" && typeof request.enabled === "boolean") {
+    setPreview(request.enabled); respond({ ok: true }); return;
+  }
   const run = request.action === "start" ? start(request) : stop();
   void run.then(() => respond({ ok: true }), async (error) => {
     await fail(error); respond({ error: error instanceof Error ? error.message : String(error) });

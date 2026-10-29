@@ -45,7 +45,9 @@ function render(state: State) {
   microphone.disabled = active;
   input("diarization").disabled = active;
   el("diarization-hint").hidden = !input("diarization").checked;
-  el("warning").textContent = state.warning ?? (state.diarization && state.status === "recording" ? "Черновик: участники будут разделены после остановки." : "");
+  el("warning").textContent = state.warning ?? (state.diarization && state.status === "recording"
+    ? input("show-text").checked ? "Демо: этот текст не сохраняется. Обе дорожки будут обработаны после остановки."
+      : "Записывается только аудио. Текст и участники появятся после остановки." : "");
   el("warning").hidden = !el("warning").textContent;
   error(state.error ?? "");
   const text = el("transcript"); text.hidden = !input("show-text").checked;

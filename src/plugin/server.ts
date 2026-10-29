@@ -3,7 +3,7 @@ import { once } from "node:events";
 import { WebSocket, WebSocketServer } from "ws";
 import type { VerifyClientCallbackSync } from "ws";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
-import { decodeAudio, MAX_AUDIO_BYTES, parseHello, SAMPLE_RATE } from "../shared/protocol.ts";
+import { decodeAudio, hasAudio, MAX_AUDIO_BYTES, parseHello, SAMPLE_RATE } from "../shared/protocol.ts";
 import type { AudioChunk, Hello, ServerMessage } from "../shared/protocol.ts";
 import type { CapturedLine, DiarizationSession } from "./diarization.ts";
 
@@ -15,6 +15,7 @@ type Recording = {
   pending: number; sequence: { tab: number; mic: number }; closing: boolean;
   ready: (sessionId: string) => void; rejectReady: (error: Error) => void; end?: Promise<void>;
   diarization?: DiarizationSession;
+  previewEnabled: boolean; previewEpoch: number; previewPending: number; previewWork: Promise<void>;
 };
 export type ScribeOptions = {
   token: string; port: number; extensionIds?: string[];
@@ -47,26 +48,18 @@ export function createScribe(options: ScribeOptions) {
     current.closing = true;
     current.end = (async () => {
       await current.work;
+      // Finish the one in-flight demo; queued demos are discarded on stop.
+      await current.previewWork;
       const capture = current.capture;
       let cleanup: (() => Promise<void>) | undefined;
       if (capture && current.diarization) {
         const staged = current.diarization;
-        let keepAudio = false;
-        let lines: CapturedLine[];
-        try {
-          send(current.socket, { type: "progress", stage: "diarization", done: 0, total: 0 });
-          lines = await staged.finalize(options.transcribe, (done, total) => send(current.socket, { type: "progress", stage: "transcription", done, total }));
-        } catch (error) {
-          keepAudio = true;
-          lines = [...staged.drafts].sort((a, b) => a.offsetMs - b.offsetMs);
-          const warning = `Разделение собеседников не завершено. Сохранён черновик без разделения; временная запись для повтора: ${staged.path}`;
-          options.warn(`${warning}. ${message(error)}`);
-          send(current.socket, { type: "warning", message: warning });
-        }
-        // Persist only the selected final result: native transcripts are append-only.
+        send(current.socket, { type: "progress", stage: "diarization", done: 0, total: 0 });
+        const lines = await staged.finalize(options.transcribe, (done, total) => send(current.socket, { type: "progress", stage: "transcription", done, total }));
+        // Demo text never enters native storage, final ASR, or a fallback.
         for (const [index, line] of lines.entries()) await commit(current, line, `final:${index}`);
         send(current.socket, { type: "transcript", lines: lines.slice(-100) });
-        if (!keepAudio) cleanup = () => staged.dispose();
+        cleanup = () => staged.dispose();
       }
       if (capture && notify) {
         await capture.onStatus?.({ sessionId: capture.session.sessionId, active: false, source: capture.session.source });
@@ -142,6 +135,7 @@ export function createScribe(options: ScribeOptions) {
     const current: Recording = {
       socket, hello, work: Promise.resolve(), pending: 0, sequence: { tab: 0, mic: 0 }, closing: false,
       ready: resolveReady, rejectReady,
+      previewEnabled: hello.preview !== false, previewEpoch: 0, previewPending: 0, previewWork: Promise.resolve(),
     };
     recording = current;
     watcher.onOccupied();
@@ -151,26 +145,51 @@ export function createScribe(options: ScribeOptions) {
     }, 15_000);
     try {
       const sessionId = await attached;
-      if (!current.closing && socket.readyState === WebSocket.OPEN) send(socket, { type: "ready", sessionId, diarization: Boolean(current.diarization) });
+      if (!current.closing && socket.readyState === WebSocket.OPEN) send(socket, {
+        type: "ready", sessionId, diarization: Boolean(current.diarization), preview: current.previewEnabled,
+      });
     } finally { clearTimeout(timeout); }
+  }
+
+  function preview(current: Recording, chunk: AudioChunk) {
+    // A slow or failed optional demo must not delay recording or fill its queue.
+    if (!current.previewEnabled || current.closing || current.previewPending >= 2 || !hasAudio(chunk.samples)) return;
+    const epoch = current.previewEpoch;
+    current.previewPending++;
+    current.previewWork = current.previewWork.then(async () => {
+      if (!current.previewEnabled || current.closing || epoch !== current.previewEpoch) return;
+      const text = (await options.transcribe(chunk, current.hello.language)).trim();
+      if (text && current.previewEnabled && !current.closing && epoch === current.previewEpoch) {
+        send(current.socket, { type: "line", line: {
+          speaker: chunk.channel === "mic" ? "Микрофон" : "Вкладка", text, offsetMs: chunk.offsetMs,
+        } });
+      }
+    }).catch(() => {
+      if (!current.closing && epoch === current.previewEpoch) send(current.socket, {
+        type: "warning", message: "Не удалось распознать демо-фрагмент. Основная запись продолжается; итог будет обработан после остановки.",
+      });
+    }).finally(() => { current.previewPending--; });
   }
 
   function acceptAudio(current: Recording, bytes: Uint8Array) {
     if (!current.capture || current.closing) throw new Error("Recording is not ready");
     const chunk = decodeAudio(bytes);
+    const previewEpoch = current.previewEpoch;
+    const previewEnabled = current.previewEnabled;
     if (chunk.sequence !== current.sequence[chunk.channel]++) throw new Error("Audio sequence mismatch");
     if (++current.pending > 12) throw new Error("Transcription cannot keep up; recording stopped to avoid losing audio");
     current.work = current.work.then(async () => {
       await current.diarization?.append(chunk);
-      // Skip only near-digital silence. Do not send silence to Whisper, which can hallucinate text.
-      const rms = Math.sqrt(chunk.samples.reduce((sum, v) => sum + v * v, 0) / chunk.samples.length) / 32768;
-      const text = rms < 0.001 || chunk.samples.length < SAMPLE_RATE / 5
-        ? "" : (await options.transcribe(chunk, current.hello.language)).trim();
+      if (current.diarization) {
+        if (previewEnabled && previewEpoch === current.previewEpoch) preview(current, chunk);
+        send(current.socket, { type: "ack", channel: chunk.channel, sequence: chunk.sequence });
+        return;
+      }
+      const text = !hasAudio(chunk.samples) ? "" : (await options.transcribe(chunk, current.hello.language)).trim();
       if (text) {
         const line = { speaker: chunk.channel === "mic" ? "Микрофон" : "Вкладка", speakerId: chunk.channel,
           text, offsetMs: chunk.offsetMs, durationMs: chunk.samples.length / SAMPLE_RATE * 1000 };
-        if (current.diarization) await current.diarization.draft(line);
-        else await commit(current, line, `${chunk.channel}:${chunk.sequence}`);
+        await commit(current, line, `${chunk.channel}:${chunk.sequence}`);
         send(current.socket, { type: "line", line });
       }
       send(current.socket, { type: "ack", channel: chunk.channel, sequence: chunk.sequence });
@@ -200,9 +219,12 @@ export function createScribe(options: ScribeOptions) {
               acceptAudio(current, new Uint8Array(data as Buffer));
               return;
             }
-            const value = JSON.parse(data.toString()) as { type?: string };
+            const value = JSON.parse(data.toString()) as { type?: string; enabled?: unknown };
             if (value.type === "stop" && current) {
               void finish(current).catch((error) => fail(current, error));
+            } else if (value.type === "preview" && current && !current.closing && typeof value.enabled === "boolean") {
+              current.previewEnabled = value.enabled;
+              current.previewEpoch++;
             } else if (value.type === "start" && !starting) {
               starting = true;
               clearTimeout(authTimeout);

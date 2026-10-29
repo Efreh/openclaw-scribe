@@ -14,6 +14,8 @@ import { WebSocket } from "ws";
 const run = promisify(execFile);
 const audio = process.argv[process.argv.indexOf("--audio") + 1];
 const diarization = process.argv.includes("--diarization");
+const preview = !diarization || process.argv.includes("--preview");
+const microphone = process.argv.includes("--microphone");
 const language = process.argv.includes("--language") ? process.argv[process.argv.indexOf("--language") + 1] : "ru";
 const duration = process.argv.includes("--duration") ? process.argv[process.argv.indexOf("--duration") + 1] : "12";
 if (!process.argv.includes("--audio") || !audio) throw new Error("Usage: npm run test:native -- --audio /path/to/public-test-audio.wav");
@@ -77,14 +79,23 @@ try {
     throw new Error(`Timed out waiting for ${type}`);
   }
   await once(ws, "open");
-  ws.send(JSON.stringify({ type: "start", version: 1, token, title: "Scribe native package smoke test", url: "https://example.test/public-audio", language, diarization }));
+  ws.send(JSON.stringify({ type: "start", version: 1, token, title: "Scribe native package smoke test", url: "https://example.test/public-audio", language, diarization, preview }));
   const { sessionId } = await wait("ready");
   const { stdout: pcm } = await run("ffmpeg", ["-v", "error", "-i", resolve(audio), "-t", duration, "-ar", "16000", "-ac", "1", "-f", "s16le", "pipe:1"], { encoding: "buffer", maxBuffer: 4 * 1024 * 1024 });
   for (let offset = 0, sequence = 0; offset < pcm.length; offset += 320_000, sequence++) {
     const audio = pcm.subarray(offset, offset + 320_000);
     const frame = Buffer.alloc(10 + audio.length); frame[0] = 1; frame[1] = 0;
     frame.writeUInt32LE(sequence, 2); frame.writeUInt32LE(offset / 32, 6); audio.copy(frame, 10); ws.send(frame);
+    if (microphone) { const mic = Buffer.from(frame); mic[1] = 1; ws.send(mic); }
   }
+  const expectedChunks = Math.ceil(pcm.length / 320_000) * (microphone ? 2 : 1);
+  const ackDeadline = Date.now() + 120_000;
+  while (events.filter((v) => v.type === "ack").length < expectedChunks) {
+    if (Date.now() > ackDeadline) throw new Error("Audio chunks were not acknowledged");
+    const error = events.find((v) => v.type === "error"); if (error) throw new Error(error.message);
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  if (diarization && !preview) assert.equal(events.filter((v) => v.type === "line").length, 0);
   ws.send(JSON.stringify({ type: "stop" }));
   await wait("stopped");
   const sessions = JSON.parse(await command(["transcripts", "list", "--json"]));
@@ -92,14 +103,16 @@ try {
   assert.ok(session); assert.ok(session.stoppedAt); assert.equal(session.hasSummary, true);
   const transcript = JSON.parse(await command(["transcripts", "path", session.selector, "--transcript", "--json"]));
   const contents = await readFile(transcript.path, "utf8");
-  assert.ok(contents.length > 50); assert.ok(events.some((v) => v.type === "line"));
+  assert.ok(contents.length > 50);
+  if (!diarization) assert.ok(events.some((v) => v.type === "line"));
   const finalLines = events.find((v) => v.type === "transcript")?.lines ?? [];
   const speakers = [...new Set(finalLines.map((line) => line.speaker))];
   if (diarization) {
     assert.ok(contents.includes("Участник 1")); assert.ok(contents.includes("Участник 2"));
-    assert.ok(!events.some((v) => v.type === "warning"), "native diarization must not fall back to the draft");
+    assert.ok(!events.some((v) => v.type === "warning"), "native finalization must not use a demo fallback");
   }
-  const proof = { ok: true, asrBackend: asrConfig?.backend ?? "openclaw", packageVersion: version, hostVersion: "2026.10.7", sessionId, chunks: events.filter((v) => v.type === "ack").length, lines: events.filter((v) => v.type === "line").length, diarization, speakers, finalLines: finalLines.length, hasNativeSummary: session.hasSummary, isolatedProfile: root };
+  if (microphone) assert.ok(contents.includes("Микрофон"));
+  const proof = { ok: true, preview, microphone, asrBackend: asrConfig?.backend ?? "openclaw", packageVersion: version, hostVersion: "2026.10.7", sessionId, chunks: events.filter((v) => v.type === "ack").length, lines: events.filter((v) => v.type === "line").length, diarization, speakers, finalLines: finalLines.length, hasNativeSummary: session.hasSummary, isolatedProfile: root };
   await writeFile(join(root, "proof.json"), JSON.stringify(proof, null, 2)); console.log(JSON.stringify(proof, null, 2));
 } catch (error) {
   await writeFile(join(root, "gateway.log"), log); console.error(`Native proof diagnostics: ${root}/gateway.log`); throw error;

@@ -9,7 +9,7 @@ import { createScribe } from "../../plugin/server.ts";
 import { encodeAudio } from "../../shared/protocol.ts";
 import type { ServerMessage } from "../../shared/protocol.ts";
 import { createDiarizationSession } from "../../plugin/diarization.ts";
-import type { CapturedLine, Turn } from "../../plugin/diarization.ts";
+import type { Turn } from "../../plugin/diarization.ts";
 
 const token = "test-token-not-a-real-credential";
 const origin = `chrome-extension://${"a".repeat(32)}`;
@@ -25,6 +25,10 @@ function messages(ws: WebSocket) {
   });
   return {
     seen,
+    waitFor(predicate: (v: ServerMessage) => boolean) {
+      const match = seen.find(predicate);
+      return match ? Promise.resolve(match) : new Promise<ServerMessage>((resolve) => pending.push({ predicate, resolve }));
+    },
     wait(type: ServerMessage["type"]) {
       const match = seen.find((v) => v.type === type);
       return match ? Promise.resolve(match) : new Promise<ServerMessage>((resolve) => pending.push({ predicate: (v) => v.type === type, resolve }));
@@ -46,7 +50,7 @@ test("real WS → local transcription → native sink; stop drains both channels
   const port = await server.start();
   const ws = new WebSocket(`ws://127.0.0.1:${port}`, { origin }); const events = messages(ws);
   try {
-    await once(ws, "open"); ws.send(JSON.stringify(hello)); await events.wait("ready");
+    await once(ws, "open"); ws.send(JSON.stringify({ ...hello, preview: false })); await events.wait("ready");
     for (const channel of ["tab", "mic"] as const) ws.send(encodeAudio({ channel, sequence: 0, offsetMs: 500, samples: new Int16Array(16_000).fill(1000) }));
     ws.send(JSON.stringify({ type: "stop" }));
     await events.wait("stopped");
@@ -105,35 +109,128 @@ test("diarization commits final speakers only, keeps identities, and drains befo
   } finally { release([]); ws.terminate(); await server.stop(); await rm(workDir, { recursive: true, force: true }); }
 });
 
-test("failed diarization saves the draft explicitly and retains a private recoverable WAV", { timeout: 10_000 }, async () => {
-  const workDir = await mkdtemp(join(tmpdir(), "scribe-fallback-"));
-  const lines: { speaker?: { label: string }; text: string }[] = [];
+test("failed finalization retains both private WAVs but never substitutes demo text", { timeout: 10_000 }, async () => {
+  const workDir = await mkdtemp(join(tmpdir(), "scribe-no-demo-fallback-"));
+  const lines: unknown[] = [];
   let stagedPath = "";
-  const server = createScribe({ port: 0, token, warn: () => {}, transcribe: async () => "preserved draft",
+  const server = createScribe({ port: 0, token, warn: () => {}, transcribe: async () => "ephemeral demo only",
     async createDiarization(hello, sessionId) {
       const staged = await createDiarizationSession({ workDir, sessionId, language: hello.language, diarize: async () => { throw new Error("test model unavailable"); } });
       stagedPath = staged.path; return staged;
     },
   });
   await server.provider.watchOccupancy!({ source: { providerId: "openclaw-scribe" }, onEmpty() {}, onOccupied() {
-    void server.provider.start!({ session: { sessionId: "fallback", startedAt: new Date().toISOString(), source: { providerId: "openclaw-scribe" } },
+    void server.provider.start!({ session: { sessionId: "no-fallback", startedAt: new Date().toISOString(), source: { providerId: "openclaw-scribe" } },
       async onUtterance(line) { lines.push(line); },
     });
   } });
   const port = await server.start(); const ws = new WebSocket(`ws://127.0.0.1:${port}`, { origin }); const events = messages(ws);
   try {
-    await once(ws, "open"); ws.send(JSON.stringify({ ...hello, diarization: true })); await events.wait("ready");
-    ws.send(encodeAudio({ channel: "tab", sequence: 0, offsetMs: 0, samples: new Int16Array(16_000).fill(1000) }));
-    ws.send(JSON.stringify({ type: "stop" })); await events.wait("stopped");
-    assert.deepEqual(lines.map((line) => [line.speaker?.label, line.text]), [["Вкладка", "preserved draft"]]);
-    assert.ok(events.seen.some((event) => event.type === "warning"));
-    const wave = await readFile(join(stagedPath, "tab.wav"));
-    assert.equal(wave.readUInt32LE(40), 32_000); assert.equal(wave.length, 32_044);
+    await once(ws, "open"); ws.send(JSON.stringify({ ...hello, diarization: true, preview: true })); await events.wait("ready");
+    for (const channel of ["tab", "mic"] as const) ws.send(encodeAudio({ channel, sequence: 0, offsetMs: 0, samples: new Int16Array(16_000).fill(1000) }));
+    await events.wait("line");
+    await events.waitFor((v) => v.type === "ack" && v.channel === "mic");
+    ws.send(JSON.stringify({ type: "stop" }));
+    const error = await events.wait("error");
+    assert.ok(error.type === "error" && error.message.includes(stagedPath));
+    await once(ws, "close");
+    assert.deepEqual(lines, [], "demo must not be used as an archive fallback");
+    assert.ok(!events.seen.some((event) => event.type === "stopped" || event.type === "transcript"));
     assert.equal((await stat(stagedPath)).mode & 0o777, 0o700);
-    assert.equal((await stat(join(stagedPath, "tab.wav"))).mode & 0o777, 0o600);
-    const drafts = (await readFile(join(stagedPath, "draft.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as CapturedLine);
-    assert.equal(drafts[0]?.text, "preserved draft");
+    for (const channel of ["tab", "mic"]) {
+      const wave = await readFile(join(stagedPath, `${channel}.wav`));
+      assert.equal(wave.readUInt32LE(40), 32_000); assert.equal(wave.length, 32_044);
+      assert.equal((await stat(join(stagedPath, `${channel}.wav`))).mode & 0o777, 0o600);
+    }
+    for (const name of await readdir(stagedPath)) {
+      assert.ok(!(await readFile(join(stagedPath, name))).includes(Buffer.from("ephemeral demo only")), "no demo text on disk");
+    }
   } finally { ws.terminate(); await server.stop(); await rm(workDir, { recursive: true, force: true }); }
+});
+
+for (const preview of [false, true]) test(`diarization preview=${preview}: no live archival and both sources get independent final ASR`, { timeout: 10_000 }, async () => {
+  const workDir = await mkdtemp(join(tmpdir(), "scribe-preview-mode-"));
+  const lines: { text: string; speaker?: { id?: string } }[] = [];
+  const calls: { channel: string; stopped: boolean }[] = [];
+  let stopped = false;
+  const server = createScribe({ port: 0, token, warn: () => {},
+    async transcribe(chunk) { calls.push({ channel: chunk.channel, stopped }); return `${stopped ? "final" : "demo"}-${chunk.channel}`; },
+    createDiarization: (hello, sessionId) => createDiarizationSession({ workDir, sessionId, language: hello.language,
+      diarize: async () => [{ start: 0, end: 1, speaker: 1 }],
+    }),
+  });
+  await server.provider.watchOccupancy!({ source: { providerId: "openclaw-scribe" }, onEmpty() {}, onOccupied() {
+    void server.provider.start!({ session: { sessionId: "preview-mode", startedAt: new Date().toISOString(), source: { providerId: "openclaw-scribe" } },
+      async onUtterance(line) { lines.push(line); },
+    });
+  } });
+  const port = await server.start(); const ws = new WebSocket(`ws://127.0.0.1:${port}`, { origin }); const events = messages(ws);
+  try {
+    await once(ws, "open"); ws.send(JSON.stringify({ ...hello, diarization: true, preview })); await events.wait("ready");
+    for (const channel of ["tab", "mic"] as const) {
+      ws.send(encodeAudio({ channel, sequence: 0, offsetMs: 0, samples: new Int16Array(16_000).fill(1000) }));
+      await events.waitFor((v) => v.type === "ack" && v.channel === channel);
+      if (preview) await events.waitFor((v) => v.type === "line" && v.line.text === `demo-${channel}`);
+    }
+    assert.equal(lines.length, 0);
+    assert.equal(calls.length, preview ? 2 : 0, "hidden mode must not invoke ASR during recording");
+    const [dir] = await readdir(workDir);
+    for (const name of await readdir(join(workDir, dir!))) {
+      assert.ok(!(await readFile(join(workDir, dir!, name))).includes(Buffer.from("demo-")));
+    }
+    stopped = true; ws.send(JSON.stringify({ type: "stop" })); await events.wait("stopped");
+    assert.deepEqual(calls.filter((call) => call.stopped).map((call) => call.channel), ["tab", "mic"]);
+    assert.deepEqual(lines.map((line) => line.text), ["final-tab", "final-mic"], "no demo reuse, including microphone");
+    assert.deepEqual(await readdir(workDir), []);
+  } finally { ws.terminate(); await server.stop(); await rm(workDir, { recursive: true, force: true }); }
+});
+
+test("demo toggles cancel stale work; a slow or failed demo cannot hold audio ACKs or supply final text", { timeout: 10_000 }, async () => {
+  const workDir = await mkdtemp(join(tmpdir(), "scribe-preview-toggle-"));
+  const calls: string[] = []; const lines: { text: string }[] = [];
+  let stopped = false;
+  let release!: () => void;
+  let started!: () => void;
+  const inFlight = new Promise<void>((resolve) => { started = resolve; });
+  const blocked = new Promise<void>((resolve) => { release = resolve; });
+  const server = createScribe({ port: 0, token, warn: () => {},
+    async transcribe(chunk) {
+      if (stopped) return `final-${chunk.channel}`;
+      calls.push(`${chunk.channel}:${chunk.sequence}`);
+      if (calls.length === 1) { started(); await blocked; return "stale demo"; }
+      throw new Error("demo unavailable");
+    },
+    createDiarization: (hello, sessionId) => createDiarizationSession({ workDir, sessionId, language: hello.language,
+      diarize: async () => [{ start: 0, end: 4, speaker: 1 }],
+    }),
+  });
+  await server.provider.watchOccupancy!({ source: { providerId: "openclaw-scribe" }, onEmpty() {}, onOccupied() {
+    void server.provider.start!({ session: { sessionId: "toggle", startedAt: new Date().toISOString(), source: { providerId: "openclaw-scribe" } },
+      async onUtterance(line) { lines.push(line); },
+    });
+  } });
+  const port = await server.start(); const ws = new WebSocket(`ws://127.0.0.1:${port}`, { origin }); const events = messages(ws);
+  const sendChunk = async (sequence: number) => {
+    ws.send(encodeAudio({ channel: "tab", sequence, offsetMs: sequence * 1000, samples: new Int16Array(16_000).fill(1000) }));
+    await events.waitFor((v) => v.type === "ack" && v.sequence === sequence);
+  };
+  try {
+    await once(ws, "open"); ws.send(JSON.stringify({ ...hello, diarization: true, preview: false })); await events.wait("ready");
+    await sendChunk(0); assert.deepEqual(calls, []);
+    ws.send(JSON.stringify({ type: "preview", enabled: true })); await sendChunk(1); await inFlight;
+    // The model is blocked, but microphone and tab recording still ACK immediately.
+    ws.send(encodeAudio({ channel: "mic", sequence: 0, offsetMs: 0, samples: new Int16Array(16_000).fill(1000) }));
+    await events.waitFor((v) => v.type === "ack" && v.channel === "mic");
+    ws.send(JSON.stringify({ type: "preview", enabled: false })); await sendChunk(2);
+    release();
+    ws.send(JSON.stringify({ type: "preview", enabled: true })); await sendChunk(3);
+    await events.wait("warning");
+    assert.deepEqual(calls, ["tab:1", "tab:3"], "queued microphone demo must be discarded after toggle");
+    assert.equal(events.seen.filter((v) => v.type === "line").length, 0, "late demo result must not reappear after disabling");
+    stopped = true; ws.send(JSON.stringify({ type: "stop" })); await events.wait("stopped");
+    assert.deepEqual(lines.map((line) => line.text), ["final-tab", "final-mic"]);
+    assert.deepEqual(await readdir(workDir), []);
+  } finally { release(); ws.terminate(); await server.stop(); await rm(workDir, { recursive: true, force: true }); }
 });
 
 test("requested diarization is rejected explicitly when the backend is not configured", { timeout: 10_000 }, async () => {

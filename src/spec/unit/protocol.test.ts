@@ -22,6 +22,7 @@ test("untrusted wire data is rejected before allocation or transcription", () =>
   const bytes = new Uint8Array(encodeAudio({ channel: "tab", sequence: 0, offsetMs: 0, samples: new Int16Array(2) }));
   bytes[1] = 8; assert.throws(() => decodeAudio(bytes));
   assert.throws(() => parseHello({ type: "start", version: 2 }));
+  assert.throws(() => parseHello({ type: "start", version: 1, token: "x", title: "a", url: "", language: "ru", preview: "yes" }));
   assert.throws(() => parseHello({ type: "start", version: 1, token: "x", title: "a", url: "", language: "ru;sh" }));
   assert.throws(() => parseHello({ type: "start", version: 1, token: "x", title: "a", url: "", language: "ru", diarization: "yes" }));
 });
