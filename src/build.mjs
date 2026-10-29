@@ -30,7 +30,7 @@ await json(join(dist, "plugin/package.json"), {
   repository: { type: "git", url: "https://github.com/Efreh/openclaw-scribe.git" },
   engines: pkg.engines,
   peerDependencies: { openclaw: "2026.10.7" }, peerDependenciesMeta: { openclaw: { optional: true } },
-  files: ["index.js", "openclaw.plugin.json", "README.md", "LICENSE", "THIRD_PARTY_NOTICES", "gigaam-worker.py", "docs/asr.md"],
+  files: ["index.js", "openclaw.plugin.json", "README.md", "LICENSE", "THIRD_PARTY_NOTICES", "gigaam-worker.py", "docs/asr.md", "docs/audio-flow.md"],
   openclaw: {
     extensions: ["./index.js"],
     compat: { pluginApi: "2026.10.7", minGatewayVersion: "2026.10.7" },
@@ -38,7 +38,7 @@ await json(join(dist, "plugin/package.json"), {
   },
 });
 await mkdir(join(dist, "plugin/docs"), { recursive: true });
-await cp(join(root, "docs/asr.md"), join(dist, "plugin/docs/asr.md"));
+for (const name of ["asr.md", "audio-flow.md"]) await cp(join(root, "docs", name), join(dist, "plugin/docs", name));
 await cp(join(src, "plugin/gigaam-worker.py"), join(dist, "plugin/gigaam-worker.py"));
 for (const name of ["LICENSE", "README.md"]) await cp(join(root, name), join(dist, "plugin", name));
 await writeFile(join(dist, "plugin/THIRD_PARTY_NOTICES"), `ws ${pkg.dependencies.ws}\n\n${await readFile(join(src, "node_modules/ws/LICENSE"), "utf8")}`);
