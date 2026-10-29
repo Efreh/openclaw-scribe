@@ -6,7 +6,9 @@ import { createAsr } from "./asr.ts";
 import type { AsrConfig } from "./asr.ts";
 export { localAudioConfig } from "./asr.ts";
 import { createScribe } from "./server.ts";
-import { createDiarizationSession, defaultDiarizationCommand, diarizeFile, prepareDiarization } from "./diarization.ts";
+import { defaultDiarizationCommand, diarizeFile, prepareDiarization } from "./diarization.ts";
+import { createRecordingSession } from "./recording.ts";
+import { openRecordingDirectory } from "./folders.ts";
 import type { DiarizationConfig } from "./diarization.ts";
 
 export async function pairingToken(stateDir: string): Promise<string> {
@@ -45,6 +47,7 @@ export default definePluginEntry({
       async start(ctx) {
         const workDir = join(ctx.stateDir, "scribe", "work");
         await mkdir(workDir, { recursive: true, mode: 0o700 });
+        const recordingsDir = join(ctx.stateDir, "scribe", "recordings");
         asr = await createAsr({
           config: asrConfig, hostConfig: ctx.config, workDir,
           async native(filePath, language, cfg) {
@@ -57,11 +60,13 @@ export default definePluginEntry({
           port, token: await pairingToken(ctx.stateDir),
           extensionIds: api.pluginConfig?.extensionIds as string[] | undefined,
           warn: (text) => ctx.logger.warn(text),
-          createDiarization: diarization ? async (hello, sessionId) => {
-            await access(diarization.model);
-            return createDiarizationSession({ workDir, sessionId, language: hello.language,
-              diarize: (path, duration) => diarizeFile(diarization, path, duration) });
-          } : undefined,
+          diarizationAvailable: Boolean(diarization),
+          createRecording: async (hello, sessionId) => {
+            if (hello.diarization) await access(diarization!.model);
+            return createRecordingSession({ workDir, recordingsDir, sessionId, language: hello.language, saveAudio: hello.saveAudio,
+              diarize: hello.diarization ? (path, duration) => diarizeFile(diarization!, path, duration) : undefined });
+          },
+          openRecording: (id, recovery) => openRecordingDirectory({ workDir, recordingsDir, id, recovery }),
           transcribe: asr.transcribe,
         });
         try { await service.start(); }

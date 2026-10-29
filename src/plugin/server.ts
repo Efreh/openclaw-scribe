@@ -4,8 +4,9 @@ import { WebSocket, WebSocketServer } from "ws";
 import type { VerifyClientCallbackSync } from "ws";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 import { decodeAudio, hasAudio, MAX_AUDIO_BYTES, parseHello, SAMPLE_RATE } from "../shared/protocol.ts";
-import type { AudioChunk, Hello, ServerMessage } from "../shared/protocol.ts";
-import type { CapturedLine, DiarizationSession } from "./diarization.ts";
+import type { AudioChunk, AudioRecording, Hello, ServerMessage } from "../shared/protocol.ts";
+import type { CapturedLine } from "./diarization.ts";
+import type { RecordingSession } from "./recording.ts";
 
 type Provider = Parameters<OpenClawPluginApi["registerTranscriptSourceProvider"]>[0];
 type Capture = Parameters<NonNullable<Provider["start"]>>[0];
@@ -14,13 +15,15 @@ type Recording = {
   socket: WebSocket; hello: Hello; capture?: Capture; work: Promise<void>;
   pending: number; sequence: { tab: number; mic: number }; closing: boolean;
   ready: (sessionId: string) => void; rejectReady: (error: Error) => void; end?: Promise<void>;
-  diarization?: DiarizationSession;
+  staged?: RecordingSession; failure?: Error;
   previewEnabled: boolean; previewEpoch: number; previewPending: number; previewWork: Promise<void>;
 };
 export type ScribeOptions = {
   token: string; port: number; extensionIds?: string[];
   transcribe: (chunk: AudioChunk, language: string) => Promise<string>;
-  createDiarization?: (hello: Hello, sessionId: string) => Promise<DiarizationSession>;
+  createRecording?: (hello: Hello, sessionId: string) => Promise<RecordingSession>;
+  diarizationAvailable?: boolean;
+  openRecording?: (id: string, recovery: boolean) => Promise<void>;
   warn: (message: string) => void;
 };
 const send = (socket: WebSocket, value: ServerMessage) => {
@@ -51,23 +54,24 @@ export function createScribe(options: ScribeOptions) {
       // Finish the one in-flight demo; queued demos are discarded on stop.
       await current.previewWork;
       const capture = current.capture;
-      let cleanup: (() => Promise<void>) | undefined;
-      if (capture && current.diarization) {
-        const staged = current.diarization;
-        send(current.socket, { type: "progress", stage: "diarization", done: 0, total: 0 });
-        const lines = await staged.finalize(options.transcribe, (done, total) => send(current.socket, { type: "progress", stage: "transcription", done, total }));
+      let lines: CapturedLine[] | undefined;
+      if (current.failure) throw current.failure;
+      if (capture && current.staged) {
+        if (current.hello.diarization) send(current.socket, { type: "progress", stage: "diarization", done: 0, total: 0 });
+        lines = await current.staged.finalize(options.transcribe, (done, total) => send(current.socket, { type: "progress", stage: "transcription", done, total }));
         // Demo text never enters native storage, final ASR, or a fallback.
         for (const [index, line] of lines.entries()) await commit(current, line, `final:${index}`);
-        send(current.socket, { type: "transcript", lines: lines.slice(-100) });
-        cleanup = () => staged.dispose();
       }
       if (capture && notify) {
         await capture.onStatus?.({ sessionId: capture.session.sessionId, active: false, source: capture.session.source });
       }
-      await cleanup?.();
-      if (capture) send(current.socket, { type: "stopped", sessionId: capture.session.sessionId });
-    })().catch((error) => {
-      send(current.socket, { type: "error", message: `Не удалось сохранить стенограмму: ${message(error)}${current.diarization ? `. Временная запись: ${current.diarization.path}` : ""}` });
+      const audio = await current.staged?.complete();
+      if (lines) send(current.socket, { type: "transcript", lines: lines.slice(-100) });
+      if (capture) send(current.socket, { type: "stopped", sessionId: capture.session.sessionId, audio });
+    })().catch(async (error) => {
+      let audio: AudioRecording | undefined;
+      try { audio = await current.staged?.recover(); } catch { /* Keep the directory even if closing a damaged file failed. */ }
+      send(current.socket, { type: "error", audio, message: `Не удалось сохранить стенограмму: ${message(error)}${current.staged ? `. Временная запись: ${current.staged.path}` : ""}` });
       throw error;
     }).finally(() => {
       if (recording === current) recording = undefined;
@@ -90,8 +94,8 @@ export function createScribe(options: ScribeOptions) {
       if (!current || current.closing || current.capture) return { ok: false, error: "No browser recording waiting to start" };
       current.capture = request;
       try {
-        if (current.hello.diarization) {
-          current.work = options.createDiarization!(current.hello, request.session.sessionId).then((session) => { current.diarization = session; });
+        if (current.hello.diarization || current.hello.saveAudio) {
+          current.work = options.createRecording!(current.hello, request.session.sessionId).then((session) => { current.staged = session; });
           await current.work;
         }
         if (current.closing) return { ok: false, error: "Browser recording closed during startup" };
@@ -115,20 +119,25 @@ export function createScribe(options: ScribeOptions) {
   };
 
   function fail(current: Recording, error: unknown) {
-    send(current.socket, { type: "error", message: message(error) });
+    current.failure ??= error instanceof Error ? error : new Error(message(error));
     options.warn(`Scribe capture failed: ${message(error)}`);
-    current.socket.close(1011, "Capture failed");
     void finish(current).catch((error) => options.warn(`Scribe finalization failed: ${message(error)}`));
+  }
+
+  function authenticate(token: unknown) {
+    if (typeof token !== "string" || token.length > 256) throw new Error("Invalid pairing token");
+    const expected = Buffer.from(options.token);
+    const supplied = Buffer.from(token);
+    if (expected.length !== supplied.length || !timingSafeEqual(expected, supplied)) throw new Error("Invalid pairing token");
   }
 
   async function begin(socket: WebSocket, raw: unknown) {
     const hello = parseHello(raw);
-    const expected = Buffer.from(options.token);
-    const supplied = Buffer.from(hello.token);
-    if (expected.length !== supplied.length || !timingSafeEqual(expected, supplied)) throw new Error("Invalid pairing token");
+    authenticate(hello.token);
     if (recording) throw new Error("Another recording is already active");
     if (!watcher) throw new Error("Run openclaw scribe setup, then restart the Gateway");
-    if (hello.diarization && !options.createDiarization) throw new Error("Для разделения собеседников выполните openclaw scribe setup --diarization и перезапустите Gateway");
+    if (hello.diarization && (options.diarizationAvailable === false || !options.createRecording)) throw new Error("Для разделения собеседников выполните openclaw scribe setup --diarization и перезапустите Gateway");
+    if ((hello.diarization || hello.saveAudio) && !options.createRecording) throw new Error("Обновите плагин OpenClaw Scribe для полной записи");
     let resolveReady!: (sessionId: string) => void;
     let rejectReady!: (error: Error) => void;
     const attached = new Promise<string>((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
@@ -146,7 +155,7 @@ export function createScribe(options: ScribeOptions) {
     try {
       const sessionId = await attached;
       if (!current.closing && socket.readyState === WebSocket.OPEN) send(socket, {
-        type: "ready", sessionId, diarization: Boolean(current.diarization), preview: current.previewEnabled,
+        type: "ready", sessionId, diarization: Boolean(hello.diarization), preview: current.previewEnabled, saveAudio: Boolean(hello.saveAudio), fullRecording: Boolean(current.staged),
       });
     } finally { clearTimeout(timeout); }
   }
@@ -179,8 +188,9 @@ export function createScribe(options: ScribeOptions) {
     if (chunk.sequence !== current.sequence[chunk.channel]++) throw new Error("Audio sequence mismatch");
     if (++current.pending > 12) throw new Error("Transcription cannot keep up; recording stopped to avoid losing audio");
     current.work = current.work.then(async () => {
-      await current.diarization?.append(chunk);
-      if (current.diarization) {
+      if (current.failure) return;
+      await current.staged?.append(chunk);
+      if (current.staged) {
         if (previewEnabled && previewEpoch === current.previewEpoch) preview(current, chunk);
         send(current.socket, { type: "ack", channel: chunk.channel, sequence: chunk.sequence });
         return;
@@ -216,11 +226,18 @@ export function createScribe(options: ScribeOptions) {
           try {
             if (binary) {
               if (!current) throw new Error("Authenticate before sending audio");
-              acceptAudio(current, new Uint8Array(data as Buffer));
+              if (!current.closing) acceptAudio(current, new Uint8Array(data as Buffer));
               return;
             }
-            const value = JSON.parse(data.toString()) as { type?: string; enabled?: unknown };
-            if (value.type === "stop" && current) {
+            const value = JSON.parse(data.toString()) as { type?: string; enabled?: unknown; token?: unknown; recordingId?: unknown; recovery?: unknown };
+            if (value.type === "open-recording" && !starting && !current) {
+              starting = true; clearTimeout(authTimeout);
+              authenticate(value.token);
+              if (typeof value.recordingId !== "string" || typeof value.recovery !== "boolean" || !options.openRecording) throw new Error("Открытие папки записи недоступно");
+              void options.openRecording(value.recordingId, value.recovery).then(() => {
+                send(socket, { type: "folder-opened" }); socket.close(1000, "Folder opened");
+              }, (error) => { send(socket, { type: "error", message: `Не удалось открыть папку на компьютере OpenClaw: ${message(error)}` }); socket.close(1000); });
+            } else if (value.type === "stop" && current) {
               void finish(current).catch((error) => fail(current, error));
             } else if (value.type === "preview" && current && !current.closing && typeof value.enabled === "boolean") {
               current.previewEnabled = value.enabled;
@@ -238,7 +255,11 @@ export function createScribe(options: ScribeOptions) {
         });
         socket.on("close", () => {
           clearTimeout(authTimeout);
-          if (recording?.socket === socket) void finish(recording).catch((error) => options.warn(message(error)));
+          if (recording?.socket === socket) {
+            const current = recording;
+            if (!current.closing) current.failure ??= new Error("Соединение с браузером прервано до завершения записи");
+            void finish(current).catch((error) => options.warn(message(error)));
+          }
         });
       });
       server.on("error", (error) => options.warn(`Scribe transport error: ${message(error)}`));

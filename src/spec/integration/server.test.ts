@@ -8,7 +8,7 @@ import { WebSocket } from "ws";
 import { createScribe } from "../../plugin/server.ts";
 import { encodeAudio } from "../../shared/protocol.ts";
 import type { ServerMessage } from "../../shared/protocol.ts";
-import { createDiarizationSession } from "../../plugin/diarization.ts";
+import { createRecordingSession } from "../../plugin/recording.ts";
 import type { Turn } from "../../plugin/diarization.ts";
 
 const token = "test-token-not-a-real-credential";
@@ -81,7 +81,7 @@ test("diarization commits final speakers only, keeps identities, and drains befo
   let release!: (turns: Turn[]) => void;
   const pending = new Promise<Turn[]>((resolve) => { release = resolve; });
   const server = createScribe({ port: 0, token, warn: () => {}, transcribe: async (chunk) => `speech-${chunk.channel}-${chunk.samples.length}`,
-    createDiarization: (hello, sessionId) => createDiarizationSession({ workDir, sessionId, language: hello.language, diarize: async () => pending }),
+    createRecording: (hello, sessionId) => createRecordingSession({ workDir, sessionId, language: hello.language, diarize: async () => pending }),
   });
   await server.provider.watchOccupancy!({ source: { providerId: "openclaw-scribe" }, onEmpty() { lifecycle.push("empty"); }, onOccupied() {
     void server.provider.start!({ session: { sessionId: "diar-test", startedAt: new Date().toISOString(), source: { providerId: "openclaw-scribe" } },
@@ -114,8 +114,8 @@ test("failed finalization retains both private WAVs but never substitutes demo t
   const lines: unknown[] = [];
   let stagedPath = "";
   const server = createScribe({ port: 0, token, warn: () => {}, transcribe: async () => "ephemeral demo only",
-    async createDiarization(hello, sessionId) {
-      const staged = await createDiarizationSession({ workDir, sessionId, language: hello.language, diarize: async () => { throw new Error("test model unavailable"); } });
+    async createRecording(hello, sessionId) {
+      const staged = await createRecordingSession({ workDir, sessionId, language: hello.language, diarize: async () => { throw new Error("test model unavailable"); } });
       stagedPath = staged.path; return staged;
     },
   });
@@ -155,7 +155,7 @@ for (const preview of [undefined, false, true]) test(`diarization preview=${prev
   let stopped = false;
   const server = createScribe({ port: 0, token, warn: () => {},
     async transcribe(chunk) { calls.push({ channel: chunk.channel, stopped }); return `${stopped ? "final" : "demo"}-${chunk.channel}`; },
-    createDiarization: (hello, sessionId) => createDiarizationSession({ workDir, sessionId, language: hello.language,
+    createRecording: (hello, sessionId) => createRecordingSession({ workDir, sessionId, language: hello.language,
       diarize: async () => [{ start: 0, end: 1, speaker: 1 }],
     }),
   });
@@ -200,7 +200,7 @@ test("demo toggles cancel stale work; a slow or failed demo cannot hold audio AC
       if (calls.length === 1) { started(); await blocked; return "stale demo"; }
       throw new Error("demo unavailable");
     },
-    createDiarization: (hello, sessionId) => createDiarizationSession({ workDir, sessionId, language: hello.language,
+    createRecording: (hello, sessionId) => createRecordingSession({ workDir, sessionId, language: hello.language,
       diarize: async () => [{ start: 0, end: 4, speaker: 1 }],
     }),
   });

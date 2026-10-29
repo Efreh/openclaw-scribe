@@ -1,28 +1,85 @@
 <!doctype html>
-<html lang="ru">
+<html lang="ru" data-theme="dark">
+<head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>OpenClaw Scribe</title>
 <link rel="stylesheet" href="style.css">
+</head>
 <body inert>
-<header><strong>Scribe</strong><span id="status" role="status">Загрузка…</span></header>
-<p id="tab" class="muted">Запишется активная вкладка в момент старта</p>
-<div class="levels"><label>Вкладка<progress id="tab-level" max="1" value="0"></progress></label><label>Микрофон<progress id="mic-level" max="1" value="0"></progress></label></div>
-<label>Микрофон<select id="microphone"><option value="default">Системный по умолчанию</option><option value="none">Без микрофона</option></select></label>
-<button id="permission" class="quiet">Разрешить доступ к микрофону</button>
-<label class="inline"><input id="diarization" type="checkbox">Разделить собеседников после записи</label>
-<p id="diarization-hint" class="muted" hidden>До 8 голосов во вкладке. Обе дорожки обрабатываются после остановки. «Показывать текст» включает отдельное демо без сохранения.</p>
-<div class="actions"><button id="start">Начать запись</button><button id="stop" disabled>Остановить</button><output id="elapsed">00:00</output></div>
-<p id="error" class="error" role="alert" hidden></p>
-<p id="warning" class="muted" role="status" hidden></p>
-<label class="inline"><input id="show-text" type="checkbox" checked>Показывать текст</label>
-<section id="transcript" aria-label="Текущая стенограмма"><p class="muted">Текст появится после первого фрагмента речи.</p></section>
-<details id="connection"><summary>Подключение</summary>
-<label>Адрес плагина<input id="url" type="url" spellcheck="false"></label>
-<label>Токен подключения<input id="token" type="password" autocomplete="off" spellcheck="false"></label>
-<label>Язык речи<input id="language" maxlength="3" pattern="[a-z]{2,3}"></label>
-<p class="muted">Данные из команды <code>openclaw scribe pair</code>. Итоги — в разделе «Встречи» OpenClaw.</p>
-</details>
+<svg class="symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>
+<symbol id="i-wave" viewBox="0 0 24 24"><path d="M3 9v6m4-10v14m5-17v20m5-16v12m4-9v6"/></symbol>
+<symbol id="i-tab" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/></symbol>
+<symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="13" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2m-7 9v3m-4 0h8"/></symbol>
+<symbol id="i-people" viewBox="0 0 24 24"><circle cx="9" cy="7" r="3"/><path d="M3 21v-3a6 6 0 0 1 12 0v3M16 4a3 3 0 0 1 0 6m3 11v-3a6 6 0 0 0-3-5"/></symbol>
+<symbol id="i-file" viewBox="0 0 24 24"><path d="M14 2H5v20h14V7Zm0 0v5h5M8 12h8m-8 4h8"/></symbol>
+<symbol id="i-text" viewBox="0 0 24 24"><path d="M3 5h18M3 10h18M3 15h18M3 20h12"/></symbol>
+<symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 20V5h7l2 3h9v12Z"/></symbol>
+<symbol id="i-settings" viewBox="0 0 24 24"><path d="m9 3 1-1h4l1 4 3 1 3-1 2 4-3 3v3l1 3-3 3-4-2-3 1-3 2-3-3 1-4-1-3-2-2 2-4 4 1Z" transform="translate(0 0) scale(.9)"/><circle cx="12" cy="12" r="3"/></symbol>
+<symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 1v3m0 16v3M1 12h3m16 0h3M4 4l2 2m12 12 2 2M4 20l2-2M18 6l2-2"/></symbol>
+<symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 15A9 9 0 0 1 9 3a9 9 0 1 0 11 12Z"/></symbol>
+<symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 5 5 9-10"/></symbol>
+<symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 7a9 9 0 1 0 1 8M20 2v6h-6"/></symbol>
+</defs></svg>
+<header class="app-header">
+  <div class="brand"><svg class="brand-icon"><use href="#i-wave"/></svg><strong>Scribe</strong></div>
+  <div class="header-actions">
+    <button id="theme" class="icon-button" type="button" aria-label="Включить светлую тему" title="Светлая тема"><svg><use id="theme-icon" href="#i-sun"/></svg></button>
+    <button id="settings" class="icon-button" type="button" aria-label="Настройки подключения" aria-expanded="false" aria-controls="connection" title="Подключение"><svg><use href="#i-settings"/></svg></button>
+  </div>
+</header>
+<main>
+  <div class="status-banner" id="status-banner">
+    <div class="status-label"><span class="status-dot" aria-hidden="true"></span><span id="status" role="status">Загрузка…</span></div>
+    <output id="elapsed" aria-label="Длительность записи">00:00</output>
+  </div>
+  <p id="completion-hint" class="hint" hidden>Стенограмма сохранена в OpenClaw</p>
+  <section id="setup" aria-label="Параметры записи">
+    <p class="section-label">Вкладка для записи</p>
+    <div class="source-field"><svg><use href="#i-tab"/></svg><span id="tab">Активная вкладка</span></div>
+    <div class="setting-row mic-toggle"><label class="setting-label" for="use-mic"><svg><use href="#i-mic"/></svg><span>Микрофон</span></label><input class="switch" id="use-mic" type="checkbox" checked></div>
+    <label for="microphone" class="sr-only">Устройство микрофона</label>
+    <select id="microphone"><option value="default">Системный</option></select>
+    <button id="permission" class="text-button" type="button">Разрешить доступ к микрофону</button>
+    <div class="options">
+      <div class="setting-row"><label class="setting-label" for="diarization"><svg><use href="#i-people"/></svg><span>Разделить говорящих<small>До 8 голосов во вкладке</small></span></label><input class="switch" id="diarization" type="checkbox"></div>
+      <div class="setting-row"><label class="setting-label" for="save-audio"><svg><use href="#i-file"/></svg><span>Сохранить аудио<small>Отдельно вкладку и микрофон</small></span></label><input class="switch" id="save-audio" type="checkbox"></div>
+    </div>
+  </section>
+  <section id="recording-params" class="recording-params" aria-label="Выбранные параметры" hidden><p id="recording-source"></p><p id="recording-mode"></p></section>
+  <section class="levels" id="levels" aria-label="Уровни аудио" hidden>
+    <label><svg><use href="#i-tab"/></svg>Вкладка<progress id="tab-level" max="1" value="0"></progress></label>
+    <label id="mic-meter"><svg><use href="#i-mic"/></svg>Микрофон<progress id="mic-level" max="1" value="0"></progress></label>
+  </section>
+  <div class="setting-row preview-toggle"><label class="setting-label" for="show-text"><svg><use href="#i-text"/></svg><span>Показывать текст</span></label><input class="switch" id="show-text" type="checkbox" checked></div>
+  <p id="mode-hint" class="hint"></p>
+  <p id="error" class="notice error" role="alert" hidden></p>
+  <p id="warning" class="notice" role="status" hidden></p>
+  <section id="transcript-block" class="transcript-block">
+    <div class="section-heading"><h2 id="transcript-title">Текст записи</h2><span id="demo-label" class="hint" hidden>Не сохраняется</span></div>
+    <section id="transcript" aria-label="Текущая стенограмма" aria-live="off"></section>
+  </section>
+  <section id="audio-files" class="audio-files" hidden>
+    <h2 id="audio-heading">Сохранённые файлы</h2>
+    <ul id="files"></ul>
+    <p id="audio-location" class="hint"></p>
+  </section>
+  <p id="connection-state" class="connection-state">Локальное подключение</p>
+  <details id="connection"><summary>Подключение</summary>
+    <label>Адрес плагина<input id="url" type="url" spellcheck="false"></label>
+    <label>Токен подключения<input id="token" type="password" autocomplete="off" spellcheck="false"></label>
+    <label>Язык речи<input id="language" maxlength="3" pattern="[a-z]{2,3}"></label>
+    <p class="hint">Данные из команды <code>openclaw scribe pair</code>. Стенограмма и итоги — во «Встречах» OpenClaw.</p>
+  </details>
+</main>
+  <footer class="actions">
+    <button id="start" class="primary" type="button"><svg><use href="#i-mic"/></svg>Начать запись</button>
+    <button id="stop" class="danger" type="button" disabled hidden><span class="stop-icon" aria-hidden="true"></span>Завершить запись</button>
+    <button id="busy" class="primary" type="button" disabled hidden>Подключение…</button>
+    <button id="open-folder" class="primary" type="button" hidden><svg><use href="#i-folder"/></svg>Открыть папку записи</button>
+    <button id="new" class="secondary" type="button" hidden><svg><use href="#i-refresh"/></svg>Новая запись</button>
+  </footer>
+
 <script type="module" src="popup.js"></script>
 </body>
 </html>

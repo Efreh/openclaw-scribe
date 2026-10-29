@@ -3,11 +3,11 @@ import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { createDiarizationSession } from "../../plugin/diarization.ts";
+import { createRecordingSession } from "../../plugin/recording.ts";
 
 test("final diarization works without any live ASR and rejects sparse-file abuse on both channels", async () => {
   const workDir = await mkdtemp(join(tmpdir(), "scribe-draft-miss-"));
-  const session = await createDiarizationSession({ workDir, sessionId: "draft-miss", language: "ru",
+  const session = await createRecordingSession({ workDir, sessionId: "draft-miss", language: "ru",
     diarize: async () => [{ start: 0, end: 1, speaker: 1 }],
   });
   try {
@@ -24,7 +24,7 @@ test("final diarization works without any live ASR and rejects sparse-file abuse
 
 for (const silent of [false, true]) test(`microphone-only finalization preserves offsets and skips silence=${silent}`, async () => {
   const workDir = await mkdtemp(join(tmpdir(), "scribe-mic-only-"));
-  const session = await createDiarizationSession({ workDir, sessionId: "mic-only", language: "ru",
+  const session = await createRecordingSession({ workDir, sessionId: "mic-only", language: "ru",
     diarize: async () => { throw new Error("No tab audio should reach the diarizer"); },
   });
   let calls = 0;

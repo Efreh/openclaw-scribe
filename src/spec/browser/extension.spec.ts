@@ -5,7 +5,7 @@ import { resolve, join } from "node:path";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import { createScribe } from "../../plugin/server.ts";
-import { createDiarizationSession } from "../../plugin/diarization.ts";
+import { createRecordingSession } from "../../plugin/recording.ts";
 
 test("packaged MV3 extension loads, renders safely and retains popup settings", async () => {
   const dir = await mkdtemp(join(tmpdir(), "scribe-browser-"));
@@ -24,6 +24,9 @@ test("packaged MV3 extension loads, renders safely and retains popup settings", 
     await expect(page.locator("#connection")).toHaveAttribute("open", "");
     await page.locator("#token").fill("test-settings-token");
     await page.locator("#diarization").check();
+    await page.locator("#save-audio").check();
+    await page.getByRole("button", { name: "Включить светлую тему" }).click();
+    await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
     await page.locator("#language").fill("en");
     await page.locator("#language").blur();
     await expect.poll(() => page.evaluate(() => chrome.storage.local.get("settings").then((data) => (data.settings as { language?: string })?.language))).toBe("en");
@@ -45,6 +48,11 @@ test("packaged MV3 extension loads, renders safely and retains popup settings", 
     await expect(reopened.locator("#token")).toHaveValue("test-settings-token");
     await expect(reopened.locator("#diarization")).toBeChecked();
     await expect(reopened.locator("#diarization")).toBeDisabled();
+    await expect(reopened.locator("#save-audio")).toBeChecked();
+    await expect(reopened.locator("#save-audio")).toBeDisabled();
+    await expect(reopened.locator("html")).toHaveAttribute("data-theme", "light");
+    await reopened.getByRole("button", { name: "Включить тёмную тему" }).click();
+    await expect(reopened.locator("html")).toHaveAttribute("data-theme", "dark");
     await expect(reopened.locator("#start")).toBeDisabled();
     await expect(reopened.locator("#stop")).toBeEnabled();
     await reopened.locator("#show-text").uncheck();
@@ -52,23 +60,24 @@ test("packaged MV3 extension loads, renders safely and retains popup settings", 
   } finally { await context.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
-for (const showText of [true, false]) test(`real capture survives popup closure; initial demo=${showText}, independent final ASR`, async () => {
+for (const [diarization, saveAudio, showText] of [[true, false, true], [true, true, false], [false, true, false]] as const) test(`real capture survives popup closure; diarization=${diarization}, saveAudio=${saveAudio}, demo=${showText}`, async () => {
   test.setTimeout(60_000);
   const dir = await mkdtemp(join(tmpdir(), "scribe-capture-"));
   const captured: string[] = [];
   let finalized = false;
   let stopped = false;
   let recordingPath = "";
+  const opened: string[] = [];
   const finalSources: string[] = [];
   const scribe = createScribe({ port: 0, token: "browser-integration-token", warn: () => {},
-    async createDiarization(hello, sessionId) {
-      const session = await createDiarizationSession({ workDir: join(dir, "staging"), sessionId, language: hello.language,
-        diarize: async (_path, duration) => [{ start: 0, end: duration / 2, speaker: 1 }, { start: duration / 2, end: duration, speaker: 2 }],
+    async createRecording(hello, sessionId) {
+      const session = await createRecordingSession({ workDir: join(dir, "staging"), sessionId, language: hello.language, saveAudio: hello.saveAudio, recordingsDir: join(dir, "saved"),
+        diarize: hello.diarization ? async (_path, duration) => [{ start: 0, end: duration / 2, speaker: 1 }, { start: duration / 2, end: duration, speaker: 2 }] : undefined,
       });
       recordingPath = session.path; return session;
     }, async transcribe(chunk) {
     (stopped ? finalSources : captured).push(chunk.channel); return `Captured ${chunk.channel}`;
-  } });
+  }, openRecording: async (id, recovery) => { expect(recovery).toBe(false); opened.push(id); } });
   await scribe.provider.watchOccupancy!({ source: { providerId: "openclaw-scribe" }, onEmpty() {}, onOccupied() {
     void scribe.provider.start!({ session: { sessionId: "browser-test", startedAt: new Date().toISOString(), source: { providerId: "openclaw-scribe" } },
       async onUtterance() {}, async onStatus(status) { if (!status.active) finalized = true; },
@@ -90,9 +99,9 @@ for (const showText of [true, false]) test(`real capture survives popup closure;
     const worker = context.serviceWorkers()[0] ?? await context.waitForEvent("serviceworker");
     const id = new URL(worker.url()).host;
     await context.grantPermissions(["microphone"]);
-    await worker.evaluate(async ({ port, showText }) => {
-      await chrome.storage.local.set({ settings: { url: `ws://127.0.0.1:${port}`, token: "browser-integration-token", microphone: "default", language: "ru", showText, diarization: true } });
-    }, { port, showText });
+    await worker.evaluate(async ({ port, showText, diarization, saveAudio }) => {
+      await chrome.storage.local.set({ settings: { url: `ws://127.0.0.1:${port}`, token: "browser-integration-token", microphone: "default", language: "ru", showText, diarization, saveAudio } });
+    }, { port, showText, diarization, saveAudio });
     const control = await context.newPage(); await control.goto(`chrome-extension://${id}/popup.html`);
     await expect(control.locator("body")).toHaveJSProperty("inert", false);
     const tab = await context.newPage(); await tab.goto(`http://127.0.0.1:${(web.address() as { port: number }).port}`);
@@ -137,9 +146,21 @@ for (const showText of [true, false]) test(`real capture survives popup closure;
     await reopened.screenshot({ path: "test-results/recording.png" });
     stopped = true;
     await reopened.locator("#stop").click();
+    await expect(reopened.locator("#status")).toHaveText("Запись готова");
+    if (diarization) {
+      await expect(reopened.locator("#transcript")).toContainText("Участник 1");
+      await expect(reopened.locator("#transcript")).toContainText("Участник 2");
+    } else await expect(reopened.locator("#transcript")).toContainText("Вкладка");
+    if (saveAudio) {
+      await expect(reopened.locator("#audio-files")).toContainText("tab.wav");
+      await expect(reopened.locator("#audio-files")).toContainText("mic.wav");
+      await reopened.locator("#open-folder").click();
+      await expect.poll(() => opened.length).toBe(1);
+      await expect.poll(() => stat(join(dir, "saved", opened[0]!, "tab.wav")).then((s) => s.size)).toBeGreaterThan(44);
+    } else await expect(reopened.locator("#open-folder")).toBeHidden();
+    await reopened.locator("#new").click();
     await expect(reopened.locator("#status")).toHaveText("Готово к записи");
-    await expect(reopened.locator("#transcript")).toContainText("Участник 1");
-    await expect(reopened.locator("#transcript")).toContainText("Участник 2");
+    await expect(reopened.locator("#save-audio")).toBeEnabled();
     expect(finalized).toBe(true);
     expect(finalSources).toEqual(expect.arrayContaining(["tab", "mic"]));
   } finally {

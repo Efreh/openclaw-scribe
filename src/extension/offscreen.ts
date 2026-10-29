@@ -15,7 +15,8 @@ let showText = true;
 
 function setPreview(enabled: boolean) {
   showText = enabled;
-  if (state.diarization && state.status === "recording" && socket?.readyState === WebSocket.OPEN) {
+  if (state.fullRecording && !enabled && state.status === "recording") { state.lines = []; state.warning = undefined; publish(); }
+  if (state.fullRecording && state.status === "recording" && socket?.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify({ type: "preview", enabled: showText }));
   }
 }
@@ -35,6 +36,8 @@ async function release() {
 async function fail(error: unknown) {
   state.error = error instanceof Error ? error.message : String(error);
   state.status = "error";
+  state.endedAt ??= Date.now();
+  if (state.fullRecording) state.lines = [];
   stopping = true;
   await release();
   socket?.close(); socket = undefined;
@@ -67,7 +70,8 @@ async function start(request: { streamId: string; tab: Tab; settings: Settings }
   showText = config.showText;
   const endpoint = validateEndpoint(config.url);
   if (!config.token.trim()) throw new Error("Укажите токен из openclaw scribe pair");
-  state = { ...idle(), status: "starting", tab: request.tab, diarization: config.diarization }; stopping = false;
+  state = { ...idle(), status: "starting", tab: request.tab, diarization: config.diarization, saveAudio: config.saveAudio,
+    fullRecording: config.diarization || config.saveAudio, microphone: config.microphone }; stopping = false;
   unacked = new Set(); publish();
   // Consume Chrome's one-use stream ID immediately, before waiting for network/native startup.
   const constraints = { mandatory: { chromeMediaSource: "tab", chromeMediaSourceId: request.streamId } } as unknown as MediaTrackConstraints;
@@ -86,13 +90,13 @@ async function start(request: { streamId: string; tab: Tab; settings: Settings }
     const done = (error?: Error) => { clearTimeout(timer); error ? reject(error) : resolve(); };
     connection.onopen = () => connection.send(JSON.stringify({
       type: "start", version: VERSION, token: config.token.trim(), title: request.tab.title,
-      url: request.tab.url, language: config.language, diarization: config.diarization, preview: showText,
+      url: request.tab.url, language: config.language, diarization: config.diarization, saveAudio: config.saveAudio, preview: showText,
     }));
     connection.onerror = () => done(new Error("Нет соединения с плагином OpenClaw"));
     connection.onclose = () => {
       if (socket !== connection) return;
       if (state.status === "starting") done(new Error("OpenClaw закрыл соединение"));
-      else if (state.status !== "idle" && state.status !== "error") void fail(new Error("Соединение прервано. Запись остановлена."));
+      else if (state.status !== "idle" && state.status !== "done" && state.status !== "error") void fail(new Error("Соединение прервано. Запись остановлена."));
     };
     connection.onmessage = ({ data }) => {
       if (socket !== connection) return;
@@ -100,11 +104,13 @@ async function start(request: { streamId: string; tab: Tab; settings: Settings }
       if (event.type === "ready") {
         if (config.diarization && event.diarization !== true) { done(new Error("Обновите плагин OpenClaw Scribe для разделения собеседников")); return; }
         if (config.diarization && typeof event.preview !== "boolean") { done(new Error("Обновите плагин OpenClaw Scribe для независимого демо и обработки после записи")); return; }
-        if (config.diarization) connection.send(JSON.stringify({ type: "preview", enabled: showText }));
+        if (state.fullRecording && event.fullRecording !== true) { done(new Error("Обновите плагин OpenClaw Scribe для сохранения аудио и полной записи")); return; }
+        if (config.saveAudio && event.saveAudio !== true) { done(new Error("Плагин не подтвердил сохранение аудио. Обновите OpenClaw Scribe")); return; }
+        if (state.fullRecording) connection.send(JSON.stringify({ type: "preview", enabled: showText }));
         state.sessionId = event.sessionId; done();
       }
       if (event.type === "ack") unacked.delete(`${event.channel}:${event.sequence}`);
-      if (event.type === "line") { state.lines = [...state.lines, event.line].slice(-100); publish(); }
+      if (event.type === "line" && (!state.fullRecording || (showText && state.status === "recording"))) { state.lines = [...state.lines, event.line].slice(-100); publish(); }
       if (event.type === "transcript") { state.lines = event.lines.slice(-100); publish(); }
       if (event.type === "warning") { state.warning = event.message; publish(); }
       if (event.type === "progress") {
@@ -112,11 +118,12 @@ async function start(request: { streamId: string; tab: Tab; settings: Settings }
         publish();
       }
       if (event.type === "error") {
+        if (event.audio) state.audio = event.audio;
         if (state.status === "starting") done(new Error(event.message));
         else void fail(new Error(event.message));
       }
       if (event.type === "stopped") {
-        state.status = "idle"; stopping = true;
+        state.status = "done"; state.audio = event.audio; state.progress = undefined; state.warning = undefined; stopping = true;
         void release().then(() => { publish(); connection.close(); if (socket === connection) socket = undefined; });
       }
     };
@@ -143,7 +150,9 @@ async function start(request: { streamId: string; tab: Tab; settings: Settings }
 
 async function stop() {
   if (stopping || state.status !== "recording") return;
-  stopping = true; state.status = "stopping"; publish();
+  stopping = true; state.status = "stopping"; state.endedAt = Date.now(); state.warning = undefined;
+  if (state.fullRecording) state.lines = [];
+  publish();
   await Promise.all(nodes.map((node) => new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("Не удалось завершить аудиодорожку")), 3000);
     const onMessage = ({ data }: MessageEvent) => {

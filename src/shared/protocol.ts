@@ -5,17 +5,19 @@ export const MAX_AUDIO_BYTES = SAMPLE_RATE * 20 * 2 + 10;
 export const DEFAULT_URL = "ws://127.0.0.1:19789";
 export type Channel = "tab" | "mic";
 export type AudioChunk = { channel: Channel; sequence: number; offsetMs: number; samples: Int16Array };
-export type Hello = { type: "start"; version: 1; token: string; title: string; url: string; language: string; diarization?: boolean; preview?: boolean };
+export type Hello = { type: "start"; version: 1; token: string; title: string; url: string; language: string; diarization?: boolean; preview?: boolean; saveAudio?: boolean };
 export type Line = { speaker: string; text: string; offsetMs: number };
+export type AudioRecording = { id: string; directory: string; files: Channel[]; recovery: boolean };
 export type ServerMessage =
-  | { type: "ready"; sessionId: string; diarization?: boolean; preview?: boolean }
+  | { type: "ready"; sessionId: string; diarization?: boolean; preview?: boolean; saveAudio?: boolean; fullRecording?: boolean }
   | { type: "ack"; channel: Channel; sequence: number }
   | { type: "line"; line: Line }
   | { type: "transcript"; lines: Line[] }
   | { type: "progress"; stage: "diarization" | "transcription"; done: number; total: number }
   | { type: "warning"; message: string }
-  | { type: "stopped"; sessionId: string }
-  | { type: "error"; message: string };
+  | { type: "stopped"; sessionId: string; audio?: AudioRecording }
+  | { type: "folder-opened" }
+  | { type: "error"; message: string; audio?: AudioRecording };
 
 export function parseHello(raw: unknown): Hello {
   const v = raw as Partial<Hello> | null;
@@ -24,7 +26,8 @@ export function parseHello(raw: unknown): Hello {
     || typeof v.url !== "string" || v.url.length > 4096
     || typeof v.language !== "string" || !/^[a-z]{2,3}$/.test(v.language)
     || (v.diarization !== undefined && typeof v.diarization !== "boolean")
-    || (v.preview !== undefined && typeof v.preview !== "boolean")) {
+    || (v.preview !== undefined && typeof v.preview !== "boolean")
+    || (v.saveAudio !== undefined && typeof v.saveAudio !== "boolean")) {
     throw new Error("Invalid start message");
   }
   return v as Hello;

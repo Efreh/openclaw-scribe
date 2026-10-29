@@ -14,7 +14,9 @@ import { WebSocket } from "ws";
 const run = promisify(execFile);
 const audio = process.argv[process.argv.indexOf("--audio") + 1];
 const diarization = process.argv.includes("--diarization");
-const preview = !diarization || process.argv.includes("--preview");
+const saveAudio = process.argv.includes("--save-audio");
+const fullRecording = diarization || saveAudio;
+const preview = !fullRecording || process.argv.includes("--preview");
 const microphone = process.argv.includes("--microphone");
 const language = process.argv.includes("--language") ? process.argv[process.argv.indexOf("--language") + 1] : "ru";
 const duration = process.argv.includes("--duration") ? process.argv[process.argv.indexOf("--duration") + 1] : "12";
@@ -79,7 +81,7 @@ try {
     throw new Error(`Timed out waiting for ${type}`);
   }
   await once(ws, "open");
-  ws.send(JSON.stringify({ type: "start", version: 1, token, title: "Scribe native package smoke test", url: "https://example.test/public-audio", language, diarization, preview }));
+  ws.send(JSON.stringify({ type: "start", version: 1, token, title: "Scribe native package smoke test", url: "https://example.test/public-audio", language, diarization, saveAudio, preview }));
   const { sessionId } = await wait("ready");
   const { stdout: pcm } = await run("ffmpeg", ["-v", "error", "-i", resolve(audio), "-t", duration, "-ar", "16000", "-ac", "1", "-f", "s16le", "pipe:1"], { encoding: "buffer", maxBuffer: 4 * 1024 * 1024 });
   for (let offset = 0, sequence = 0; offset < pcm.length; offset += 320_000, sequence++) {
@@ -95,16 +97,21 @@ try {
     const error = events.find((v) => v.type === "error"); if (error) throw new Error(error.message);
     await new Promise((r) => setTimeout(r, 100));
   }
-  if (diarization && !preview) assert.equal(events.filter((v) => v.type === "line").length, 0);
+  if (fullRecording && !preview) assert.equal(events.filter((v) => v.type === "line").length, 0);
   ws.send(JSON.stringify({ type: "stop" }));
-  await wait("stopped");
+  const stopped = await wait("stopped");
+  assert.equal(Boolean(stopped.audio), saveAudio);
+  if (saveAudio) for (const channel of stopped.audio.files) {
+    const wav = await readFile(join(stopped.audio.directory, channel + ".wav"));
+    assert.equal(wav.readUInt32LE(40), pcm.length); assert.equal(wav.length, pcm.length + 44);
+  }
   const sessions = JSON.parse(await command(["transcripts", "list", "--json"]));
   const session = sessions.find((s) => s.sessionId === sessionId);
   assert.ok(session); assert.ok(session.stoppedAt); assert.equal(session.hasSummary, true);
   const transcript = JSON.parse(await command(["transcripts", "path", session.selector, "--transcript", "--json"]));
   const contents = await readFile(transcript.path, "utf8");
   assert.ok(contents.length > 50);
-  if (!diarization) assert.ok(events.some((v) => v.type === "line"));
+  if (!fullRecording) assert.ok(events.some((v) => v.type === "line"));
   const finalLines = events.find((v) => v.type === "transcript")?.lines ?? [];
   const speakers = [...new Set(finalLines.map((line) => line.speaker))];
   if (diarization) {
@@ -112,7 +119,7 @@ try {
     assert.ok(!events.some((v) => v.type === "warning"), "native finalization must not use a demo fallback");
   }
   if (microphone) assert.ok(contents.includes("Микрофон"));
-  const proof = { ok: true, preview, microphone, asrBackend: asrConfig?.backend ?? "openclaw", packageVersion: version, hostVersion: "2026.10.7", sessionId, chunks: events.filter((v) => v.type === "ack").length, lines: events.filter((v) => v.type === "line").length, diarization, speakers, finalLines: finalLines.length, hasNativeSummary: session.hasSummary, isolatedProfile: root };
+  const proof = { ok: true, saveAudio, preview, microphone, asrBackend: asrConfig?.backend ?? "openclaw", packageVersion: version, hostVersion: "2026.10.7", sessionId, chunks: events.filter((v) => v.type === "ack").length, lines: events.filter((v) => v.type === "line").length, diarization, speakers, finalLines: finalLines.length, savedAudio: stopped.audio?.files ?? [], hasNativeSummary: session.hasSummary, isolatedProfile: root };
   await writeFile(join(root, "proof.json"), JSON.stringify(proof, null, 2)); console.log(JSON.stringify(proof, null, 2));
 } catch (error) {
   await writeFile(join(root, "gateway.log"), log); console.error(`Native proof diagnostics: ${root}/gateway.log`); throw error;
