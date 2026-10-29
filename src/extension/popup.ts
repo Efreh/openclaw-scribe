@@ -152,8 +152,6 @@ el("theme").onclick = async () => {
   theme();
   await chrome.storage.local.set({ settings: config });
 };
-el("settings").onclick = () => { el<HTMLDetailsElement>("connection").open = !el<HTMLDetailsElement>("connection").open; };
-el("connection").ontoggle = () => { el("settings").setAttribute("aria-expanded", String(el<HTMLDetailsElement>("connection").open)); };
 el("start").onclick = async () => {
   el<HTMLButtonElement>("start").disabled = true;
   try {

@@ -6,6 +6,7 @@ import { once } from "node:events";
 import { createServer } from "node:http";
 import { createScribe } from "../../plugin/server.ts";
 import { createRecordingSession } from "../../plugin/recording.ts";
+import { openActionPopup } from "../support/action-popup.ts";
 
 test("packaged MV3 extension loads, renders safely and retains popup settings", async () => {
   const dir = await mkdtemp(join(tmpdir(), "scribe-browser-"));
@@ -167,4 +168,58 @@ for (const [diarization, saveAudio, showText] of [[true, false, true], [true, tr
     await context.close(); await scribe.stop(); await new Promise<void>((r) => web.close(() => r()));
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+
+test("real browser-action popup keeps 400px content and visible controls in both themes and all states", async ({}, testInfo) => {
+  const dir = await mkdtemp(join(tmpdir(), "scribe-action-layout-"));
+  const extension = resolve("../dist/browser");
+  const context = await chromium.launchPersistentContext(dir, {
+    channel: "chromium", headless: true,
+    args: [`--disable-extensions-except=${extension}`, `--load-extension=${extension}`, "--enable-unsafe-extension-debugging"],
+  });
+  try {
+    const worker = context.serviceWorkers()[0] ?? await context.waitForEvent("serviceworker");
+    const id = new URL(worker.url()).host;
+    const host = await context.newPage();
+    await host.goto("data:text/html,<title>Popup layout regression</title>");
+    for (const theme of ["dark", "light"]) for (const status of ["idle", "recording", "done"]) {
+      await worker.evaluate(async ({ theme, status }) => {
+        await chrome.storage.local.set({ settings: { token: "popup-layout-only", microphone: "default", language: "ru",
+          showText: true, diarization: true, saveAudio: true, theme } });
+        await chrome.storage.session.set({ state: { status, diarization: true, saveAudio: true, fullRecording: true,
+          microphone: "default", tab: { id: 1, title: "Длинное название командной встречи для проверки размеров", url: "https://example.test" },
+          levels: { tab: .1, mic: .05 }, lines: status === "idle" ? [] : [{ speaker: "Вкладка", text: "Проверка отображения текста.", offsetMs: 0 }],
+          ...(status !== "idle" ? { startedAt: Date.now() - 270000 } : {}),
+          ...(status === "done" ? { endedAt: Date.now(), audio: { id: "recording-TEST12", directory: "/recordings/recording-TEST12", files: ["tab", "mic"], recovery: false } } : {}),
+        } });
+      }, { theme, status });
+      await host.bringToFront();
+      const popup = await openActionPopup(context, id, host);
+      try {
+        await expect.poll(() => popup.evaluate("document.body?.inert === false")).toBe(true);
+        await expect.poll(() => popup.evaluate("document.body.getBoundingClientRect().width")).toBe(400);
+        await expect.poll(() => popup.evaluate("innerHeight >= 200 && document.querySelector('.actions').getBoundingClientRect().bottom <= innerHeight")).toBe(true);
+        const layout = await popup.evaluate<{ width: number; height: number; root: number; body: number; scroll: number; footer: number; isPopup: boolean; theme: string; state: string; labelLines: number }>(`(() => {
+          const range = document.createRange();
+          range.selectNodeContents(document.querySelector('label[for="diarization"] span').firstChild);
+          return { width: innerWidth, height: innerHeight, root: document.documentElement.getBoundingClientRect().width,
+            body: document.body.getBoundingClientRect().width, scroll: document.documentElement.scrollWidth,
+            footer: document.querySelector('.actions').getBoundingClientRect().bottom,
+            isPopup: chrome.extension.getViews({ type: 'popup' }).includes(window),
+            theme: document.documentElement.dataset.theme, state: document.body.dataset.status,
+            labelLines: range.getClientRects().length };
+        })()`);
+        expect(layout.isPopup).toBe(true);
+        expect(layout.root).toBe(400); expect(layout.body).toBe(400);
+        // Chromium may reserve a native scrollbar gutter when clamping popup height.
+        expect(layout.width).toBeGreaterThanOrEqual(400); expect(layout.width).toBeLessThanOrEqual(432);
+        expect(layout.scroll).toBeLessThanOrEqual(layout.width);
+        expect(layout.height).toBeLessThanOrEqual(600); expect(layout.footer).toBeLessThanOrEqual(layout.height);
+        expect(layout.theme).toBe(theme); expect(layout.state).toBe(status);
+        if (status === "idle") expect(layout.labelLines).toBe(1);
+        await testInfo.attach("action-popup-" + theme + "-" + status, { body: await popup.screenshot(), contentType: "image/png" });
+      } finally { await popup.close(); }
+    }
+  } finally { await context.close(); await rm(dir, { recursive: true, force: true }); }
 });

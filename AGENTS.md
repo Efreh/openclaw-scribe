@@ -22,3 +22,8 @@
   invent per-chunk voice matching or install exploratory engines as dependencies.
 - Keep personal data, conversations, credentials, recordings, host-specific
   details, and local verification output out of Git and release archives.
+
+- Verify popup layout in a real browser-action popup target opened from the
+  extension button, not only popup.html navigated as a normal browser tab.
+  Give the popup document a viewport-independent minimum width: viewport-relative
+  caps can prevent Chromium/Opera from expanding its initially narrow popup.

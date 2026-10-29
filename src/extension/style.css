@@ -18,7 +18,10 @@
 }
 * { box-sizing:border-box; }
 [hidden] { display:none !important; }
-body { width:400px; max-width:100vw; margin:0; }
+/* Browser-action windows auto-size from document constraints, not a normal tab viewport. */
+html.recorder-popup { width:400px; min-width:400px; height:600px; overflow:hidden; }
+body { margin:0; }
+.recorder-popup body { width:400px; min-width:400px; height:100vh; }
 body:not(.permission) { display:flex; flex-direction:column; max-height:600px; overflow:hidden; }
 svg { width:20px; height:20px; fill:none; stroke:currentColor; stroke-width:1.65; stroke-linecap:round; stroke-linejoin:round; flex-shrink:0; }
 .symbols { position:absolute; width:0; height:0; overflow:hidden; }
